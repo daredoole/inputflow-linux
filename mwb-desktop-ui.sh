@@ -807,13 +807,33 @@ discover_peers() {
 }
 
 discover_and_save_peer() {
-  local selected
+  local selected host key key_file secret_id auth_count action
   selected="$(discover_peers || true)"
   if [[ -z "$selected" ]]; then
     return 1
   fi
 
-  edit_settings "$selected" || return 1
+  host="$(read_config_value host)"
+  key="$(read_config_value key)"
+  key_file="$(read_config_value key_file)"
+  secret_id="$(read_secret_id_value)"
+  auth_count="$(configured_auth_source_count "$key" "$key_file" "$secret_id")"
+
+  if (( auth_count == 1 )); then
+    action="$(zenity --list --radiolist --title="$APP_NAME discovered peer" --width=560 --height=260 \
+      --text="Discovered Windows host: $selected\n\nChoose how to use it." \
+      --column="Use" --column="Action" \
+      TRUE "Use as configured Windows host now" \
+      FALSE "Open full settings for this peer" || true)"
+    [[ -n "$action" ]] || return 1
+    if [[ "$action" == "Use as configured Windows host now" ]]; then
+      set_configured_host "$selected"
+    else
+      edit_settings "$selected" || return 1
+    fi
+  else
+    edit_settings "$selected" || return 1
+  fi
 
   if ! service_active; then
     if zenity --question --title="$APP_NAME" --width=480 \
@@ -1140,6 +1160,12 @@ stop_session() {
   zenity --info --text="Stopped the $APP_NAME background service."
 }
 
+restart_session() {
+  install_service
+  systemctl --user restart "$SERVICE_NAME" >/dev/null 2>&1 || true
+  zenity --info --text="Restarted the $APP_NAME background service."
+}
+
 install_desktop_entry() {
   local entry_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
   local entry_path="$entry_dir/mwb-client-ui.desktop"
@@ -1161,7 +1187,7 @@ Terminal=false
 Categories=Utility;Network;
 Keywords=mouse;keyboard;sharing;input;controller;
 StartupNotify=false
-Actions=OpenSettings;OpenConnectionBehavior;ShowTrayHelp;ShowStatus;StartService;StopService;
+Actions=OpenSettings;OpenConnectionBehavior;ShowTrayHelp;ShowStatus;StartService;RestartService;StopService;
 
 [Desktop Action OpenSettings]
 Name=Open Settings
@@ -1182,6 +1208,10 @@ Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") status
 [Desktop Action StartService]
 Name=Start Service
 Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") start
+
+[Desktop Action RestartService]
+Name=Restart Service
+Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") restart
 
 [Desktop Action StopService]
 Name=Stop Service
@@ -1218,6 +1248,7 @@ main_menu() {
       "Connection behavior" \
       "Discover peers" \
       "Start background service" \
+      "Restart background service" \
       "Stop background service" \
       "Show known peers" \
       "Tray visibility help" \
@@ -1230,6 +1261,7 @@ main_menu() {
       "Connection behavior") edit_connection_behavior ;;
       "Discover peers") discover_and_save_peer ;;
       "Start background service") start_session ;;
+      "Restart background service") restart_session ;;
       "Stop background service") stop_session ;;
       "Show known peers") show_peers ;;
       "Tray visibility help") show_tray_visibility_help ;;
@@ -1251,11 +1283,12 @@ case "${1:-menu}" in
   tray-help|visibility-help) show_tray_visibility_help ;;
   status) show_status ;;
   start) start_session ;;
+  restart) restart_session ;;
   stop) stop_session ;;
   tray) start_tray ;;
   install-desktop-entry|install-desktop-entries) install_desktop_entry ;;
   help|-h|--help)
-    printf 'Usage: %s [menu|settings|connection|discover|peers|tray-help|status|start|stop|tray|install-desktop-entry]\n' "$(basename "${BASH_SOURCE[0]}")"
+    printf 'Usage: %s [menu|settings|connection|discover|peers|tray-help|status|start|restart|stop|tray|install-desktop-entry]\n' "$(basename "${BASH_SOURCE[0]}")"
     ;;
   *)
     zenity --error --text="Unknown action: $1"
