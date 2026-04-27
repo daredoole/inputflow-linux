@@ -58,20 +58,6 @@ Recommended first-run flow:
 6. Start the Linux service with `./build/mwb_client install-user-service` and `systemctl --user enable --now mwb-client.service`.
 7. Verify the service with `./build/mwb_client doctor --config ~/.config/mwb-client/config.ini`.
 
-## Screenshots
-
-Pairing helper workflow:
-
-![Pairing helper screenshot](docs/screenshots/pairing-helper.svg)
-
-Windows layout example:
-
-![PowerToys layout screenshot](docs/screenshots/powertoys-layout.svg)
-
-Linux tray and controller flow:
-
-![Tray and controller screenshot](docs/screenshots/tray-controller.svg)
-
 ## Features
 
 - Absolute cursor movement and click injection (left, right, middle buttons, scroll wheel)
