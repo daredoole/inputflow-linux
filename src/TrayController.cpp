@@ -552,7 +552,7 @@ int main(int argc, char** argv) {
     context.discoverPeersItem = AddMenuItem(menu, "Discover Peers", G_CALLBACK(OnDiscoverPeers), &context);
     context.showPeersItem = AddMenuItem(menu, "Show Known Peers", G_CALLBACK(OnShowPeers), &context);
     context.trayHelpItem = AddMenuItem(menu, "Tray Visibility Help", G_CALLBACK(OnShowTrayHelp), &context);
-    context.installDesktopEntriesItem = AddMenuItem(menu, "Install Desktop Launchers", G_CALLBACK(OnInstallDesktopEntries), &context);
+    context.installDesktopEntriesItem = AddMenuItem(menu, "Install Desktop Entries", G_CALLBACK(OnInstallDesktopEntries), &context);
     context.showStatusItem = AddMenuItem(menu, "Show Service Details", G_CALLBACK(OnShowStatus), &context);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
     context.startItem = AddMenuItem(menu, "Start Service", G_CALLBACK(OnStartService), &context);
