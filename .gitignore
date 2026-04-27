@@ -3,6 +3,7 @@ build/
 build-*/
 
 # Working/research files not for public release
+AGENTS.md
 gemini/
 implementation_plan.md
 master_verification_protocol.md
