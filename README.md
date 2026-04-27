@@ -5,7 +5,7 @@
 
 > **⚠️ Public Beta**
 >
-> InputFlow is usable today for Windows-to-Linux keyboard, pointer, and text clipboard sharing, but it is still stabilizing around reconnection behavior, PowerToys peer registration, and desktop-environment edge cases. Expect rough edges, keep logs when something looks wrong, and prefer the pairing-helper flow described below.
+> InputFlow is usable today for Windows-to-Linux keyboard, pointer, and text clipboard sharing, but it is still stabilizing around reconnection behavior, PowerToys peer registration, and desktop-environment edge cases. Expect rough edges, keep logs when something looks wrong, and prefer the pairing-helper onboarding flow described below instead of assuming PowerToys will always learn the Linux peer automatically.
 
 InputFlow is a native C++17 Linux companion for [Microsoft PowerToys "Mouse Without Borders"](https://learn.microsoft.com/en-us/windows/powertoys/mouse-without-borders), enabling seamless cursor and keyboard sharing between Linux and Windows while keeping the Linux-side product identity distinct.
 
@@ -51,12 +51,31 @@ What still needs caution:
 Recommended first-run flow:
 
 1. Build the project and install a clipboard helper such as `wl-clipboard` on Wayland or `xclip` on X11.
-2. Generate a Linux config with `./build/mwb_client init-config --config ~/.config/mwb-client/config.ini`.
-3. Store the shared key with `key_file=` or `key_secret_id=` rather than leaving `key=` inline.
-4. Export the Windows helper with `./build/mwb_client export-windows-pair --config ~/.config/mwb-client/config.ini --position top-left`.
-5. Run the exported PowerShell helper on Windows to seed PowerToys MWB state.
-6. Start the Linux service with `./build/mwb_client install-user-service` and `systemctl --user enable --now mwb-client.service`.
-7. Verify the service with `./build/mwb_client doctor --config ~/.config/mwb-client/config.ini`.
+2. Generate a Linux config template with `./build/mwb_client init-config --config ~/.config/mwb-client/config.ini`.
+3. Populate the Linux config with the Windows host, Linux machine name, and shared security key source.
+4. Prefer moving the shared key into `key_file=` or `key_secret_id=` rather than leaving `key=` inline.
+5. Export the Windows helper with `./build/mwb_client export-windows-pair --config ~/.config/mwb-client/config.ini --position top-left`.
+6. Run the exported PowerShell helper on Windows to synchronize PowerToys MWB state for the Linux peer.
+7. Start the Linux service with `./build/mwb_client install-user-service` and `systemctl --user enable --now mwb-client.service`.
+8. Verify the service with `./build/mwb_client doctor --config ~/.config/mwb-client/config.ini`.
+
+Minimal example:
+
+```bash
+./build/mwb_client init-config \
+  --config ~/.config/mwb-client/config.ini \
+  --host 192.0.2.10 \
+  --name fedora
+
+printf '%s' 'MySecurityKey123' | ./build/mwb_client secret-store \
+  --config ~/.config/mwb-client/config.ini \
+  --secret-id desktop-default \
+  --stdin
+
+./build/mwb_client export-windows-pair \
+  --config ~/.config/mwb-client/config.ini \
+  --position top-left
+```
 
 ## Features
 
@@ -159,16 +178,18 @@ existing `mwb_client` command and `mwb-client.service` compatibility names.
 
 The client uses this order:
 
-1. `MWB_SCREEN_WIDTH` and `MWB_SCREEN_HEIGHT`, if both are set
-2. Enabled connector modes from `/sys/class/drm`
-3. A 1920×1080 fallback
+1. `--screen-width` and `--screen-height`, or `screen_width=` and `screen_height=` in config
+2. `MWB_SCREEN_WIDTH` and `MWB_SCREEN_HEIGHT`, if both are set
+3. KDE Wayland logical geometry from `kscreen-doctor`, when available
+4. Enabled connector modes from `/sys/class/drm`
+5. A 1920×1080 fallback
 
-Explicit environment overrides are recommended on stacked or mixed-DPI multi-monitor desktops, and inside containers where `/sys/class/drm` may not reflect the host desktop.
+Automatic sizing is usually good enough on KDE Plasma Wayland and straightforward single-desktop setups. Explicit overrides are mainly useful on unusual multi-monitor layouts, mixed-DPI desktops, or inside containers where `/sys/class/drm` may not reflect the host desktop accurately.
 
 Example:
 
 ```bash
-MWB_SCREEN_WIDTH=2560 MWB_SCREEN_HEIGHT=1600 ./build/mwb_client 192.0.2.10 MySecurityKey123
+./build/mwb_client run --host 192.0.2.10 --key MySecurityKey123 --screen-width 2560 --screen-height 1600
 ```
 
 ### Clipboard helper tools
@@ -274,7 +295,7 @@ On Wayland, the client prefers `wl-paste --watch` for near-immediate clipboard u
 - Remote clipboard payloads are size-limited, and unsupported image clipboard transfers are rejected instead of being buffered indefinitely.
 - Clipboard socket trust remains bound to an active authenticated control session before any decoded clipboard text is delivered.
 - The client now validates the legacy MWB packet magic/checksum on receive, but the upstream PowerToys protocol itself does not provide modern authenticated encryption. Full MAC/AEAD protection would require a protocol change on both ends.
-- Prefer `--key-file`, `--key-secret-id`, or `--stdin` over putting the security key directly in shell history.
+- Prefer `--key-file` or `--key-secret-id`, or use `secret-store --stdin`, rather than putting the security key directly in shell history.
 
 ## Usage
 
@@ -320,7 +341,7 @@ Example:
 Example with explicit screen sizing:
 
 ```bash
-MWB_SCREEN_WIDTH=2560 MWB_SCREEN_HEIGHT=1600 ./build/mwb_client 192.0.2.10 MySecurityKey123
+./build/mwb_client run --host 192.0.2.10 --key MySecurityKey123 --screen-width 2560 --screen-height 1600
 ```
 
 ### Discovery
@@ -476,11 +497,13 @@ When the tray is available, the controller and tray share the same peer-manageme
 ### Setup in PowerToys
 
 1. Open **PowerToys → Mouse Without Borders** on Windows.
-2. Enable the feature and note your **Security key**.
+2. Enable the feature and note the current **Security key** if you are pairing manually.
 3. Prefer the exported `inputflow-windows-pair-<machine>.ps1` helper from Linux to seed the shared key, `MachineMatrixString`, `MachinePool`, and `Name2IP`.
 4. Reopen PowerToys and confirm the Linux peer appears in the layout.
-5. Place the Linux machine in the desired screen slot.
+5. Adjust the layout slot if needed, or regenerate the helper with a different `--position`.
 6. Start the Linux service and verify the connection from the tray or desktop controller.
+
+Direct manual pairing in PowerToys can work, but the helper is the more reliable current path when Windows does not persist the Linux peer on its own.
 
 ### Troubleshooting and Diagnostics
 
@@ -502,6 +525,8 @@ Windows-side support helpers in `tools/`:
 - `windows_mwb_lock_inspect.ps1` samples transient lockers for `settings.json`
 - `windows_mwb_socket_trace.ps1` captures MWB-specific process, service, event-log, file, and socket traces
 - `windows_mwb_seed_peer.ps1` seeds PowerToys peer state directly when recovery is needed
+
+If PowerToys connects transiently but never shows the Linux machine in its layout, rerun the exported pairing helper before assuming the Linux service or security key is wrong.
 
 If you attach a trace publicly, redact:
 
