@@ -1,7 +1,7 @@
 # InputFlow
 
 ![Status: Public Beta](https://img.shields.io/badge/status-public%20beta-e0a100)
-![License: MIT](https://img.shields.io/badge/license-MIT-blue)
+![License: GPLv3](https://img.shields.io/badge/license-GPLv3-blue)
 
 > **⚠️ Public Beta**
 >
@@ -614,7 +614,7 @@ The current automated checks cover:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GNU GPL v3.0 — see [LICENSE](LICENSE).
 
 InputFlow is independent and is not affiliated with or endorsed by Microsoft. It interoperates with the PowerToys Mouse Without Borders protocol by studying the published open-source implementation at [microsoft/PowerToys](https://github.com/microsoft/PowerToys).
 
