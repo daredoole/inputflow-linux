@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">PowerToys device layout screenshot</title>
+  <desc id="desc">Mock screenshot showing a Windows machine and a Fedora machine arranged in the Mouse Without Borders device layout.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f7f4ef"/>
+      <stop offset="100%" stop-color="#e6f0f4"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#1e3742" flood-opacity="0.18"/>
+    </filter>
+    <style>
+      .label { font: 700 18px 'DejaVu Sans Mono', monospace; fill: #3d5b66; letter-spacing: 0.06em; }
+      .title { font: 700 42px 'DejaVu Sans', sans-serif; fill: #1c2d33; }
+      .body  { font: 500 20px 'DejaVu Sans', sans-serif; fill: #526a72; }
+      .panel { font: 700 22px 'DejaVu Sans', sans-serif; fill: #17323c; }
+      .small { font: 500 18px 'DejaVu Sans', sans-serif; fill: #47616a; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <text x="80" y="96" class="label">POWERTOYS LAYOUT</text>
+  <text x="80" y="150" class="title">Place Fedora explicitly in the device matrix</text>
+  <text x="80" y="190" class="body">The exported helper seeds the MWB peer state; the layout still needs a clear position so screen-edge crossing matches your desk.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="90" y="250" width="1100" height="390" rx="28" fill="#ffffff" stroke="#d2dde2"/>
+    <rect x="130" y="292" width="470" height="270" rx="24" fill="#dbe9ef" stroke="#8db3c0"/>
+    <rect x="678" y="292" width="380" height="180" rx="24" fill="#e7f0cf" stroke="#afc98a"/>
+
+    <text x="170" y="350" class="panel">WIN-PC</text>
+    <text x="170" y="386" class="small">Windows host</text>
+    <text x="170" y="422" class="small">PowerToys Mouse Without Borders</text>
+
+    <text x="714" y="348" class="panel">fedora</text>
+    <text x="714" y="384" class="small">Linux client</text>
+    <text x="714" y="420" class="small">Auto-connect + clipboard enabled</text>
+
+    <path d="M620 382 C650 382 660 382 678 382" stroke="#355c6b" stroke-width="8" fill="none" stroke-linecap="round"/>
+    <polygon points="675,366 708,382 675,398" fill="#355c6b"/>
+
+    <rect x="130" y="586" width="928" height="20" rx="10" fill="#edf4f7"/>
+    <rect x="130" y="586" width="470" height="20" rx="10" fill="#90c6da"/>
+    <rect x="606" y="586" width="452" height="20" rx="10" fill="#c7dc92"/>
+  </g>
+
+  <text x="80" y="684" class="body">Recommended first test: Windows on the left, Fedora on the right, clipboard on, service mode off until the session has proven stable.</text>
+</svg>

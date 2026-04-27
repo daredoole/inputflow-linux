@@ -1,0 +1,14 @@
+[Unit]
+Description=InputFlow Linux client
+Documentation=man:systemd.service(5)
+ConditionPathExists=%h/.config/mwb-client/config.ini
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/mwb_client run --config %h/.config/mwb-client/config.ini
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
