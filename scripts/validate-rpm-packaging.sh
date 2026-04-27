@@ -57,7 +57,7 @@ for path in "${required_files[@]}"; do
 done
 
 grep -Eq '^Name:[[:space:]]+inputflow$' "$spec_file" || fail "spec package name must remain inputflow"
-grep -Eq '^License:[[:space:]]+MIT$' "$spec_file" || fail "spec license must be MIT"
+grep -Eq '^License:[[:space:]]+GPL-3.0-only$' "$spec_file" || fail "spec license must be GPL-3.0-only"
 grep -Eq '^BuildRequires:[[:space:]]+systemd-rpm-macros$' "$spec_file" || fail "spec must build with systemd RPM macros"
 grep -Eq '^Requires\(preun\):[[:space:]]+systemd$|%\{\?systemd_requires\}' "$spec_file" || fail "spec must include systemd preun requirements"
 grep -Eq '^Requires\(post\):[[:space:]]+systemd-udev$' "$spec_file" || fail "spec must require udevadm for post scripts"

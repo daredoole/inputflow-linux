@@ -51,12 +51,15 @@ What still needs caution:
 Recommended first-run flow:
 
 1. Build the project and install a clipboard helper such as `wl-clipboard` on Wayland or `xclip` on X11.
-2. Generate a Linux config template with `./build/mwb_client init-config --config ~/.config/mwb-client/config.ini`.
-3. Populate the Linux config with the Windows host, Linux machine name, and shared security key source.
-4. Prefer moving the shared key into `key_file=` or `key_secret_id=` rather than leaving `key=` inline.
-5. Export the Windows helper with `./build/mwb_client export-windows-pair --config ~/.config/mwb-client/config.ini --position top-left`.
-6. Run the exported PowerShell helper on Windows to synchronize PowerToys MWB state for the Linux peer.
-7. Start the Linux service with `./build/mwb_client install-user-service` and `systemctl --user enable --now mwb-client.service`.
+2. Generate a Linux config with the Windows host and Linux machine name:
+   `./build/mwb_client init-config --config ~/.config/mwb-client/config.ini --host 192.0.2.10 --name fedora`
+3. Store the shared key in the desktop keyring instead of leaving `key=` inline:
+   `printf '%s' 'MySecurityKey123' | ./build/mwb_client secret-store --config ~/.config/mwb-client/config.ini --secret-id desktop-default --stdin`
+4. Export the Windows helper with `./build/mwb_client export-windows-pair --config ~/.config/mwb-client/config.ini --position top-left`.
+5. Run the exported PowerShell helper on Windows to synchronize PowerToys MWB state for the Linux peer:
+   `powershell -ExecutionPolicy Bypass -File .\\inputflow-windows-pair-fedora.ps1 -ClosePowerToys`
+6. Start the Linux service with `./build/mwb_client install-user-service --config ~/.config/mwb-client/config.ini`.
+7. Enable it with `systemctl --user daemon-reload && systemctl --user enable --now mwb-client.service`.
 8. Verify the service with `./build/mwb_client doctor --config ~/.config/mwb-client/config.ini`.
 
 Minimal example:
@@ -88,7 +91,7 @@ printf '%s' 'MySecurityKey123' | ./build/mwb_client secret-store \
 - Windows pairing-helper export that seeds PowerToys peer state when current builds do not learn the Linux peer automatically
 - Safer key sourcing via `key_file=` / `--key-file` or `key_secret_id=` / `--key-secret-id`
 - Lightweight desktop controller and optional tray controller for the `systemd --user` service
-- AES-256-CBC encrypted protocol matching PowerToys MWB exactly
+- PowerToys-compatible AES-256-CBC transport and packet framing
 
 ## Project Structure
 
@@ -97,18 +100,21 @@ mwb-client-linux/
 ├── CMakeLists.txt
 ├── Dockerfile
 ├── README.md
+├── docs/screenshots/
+├── packaging/
+├── tests/
+├── tools/
 └── src/
-    ├── AppConfig.h / .cpp
-    ├── AppState.h / .cpp
-    ├── ClientRuntime.h / .cpp
-    ├── Discovery.h / .cpp
-    ├── InputDispatcher.h / .cpp
-    ├── main.cpp
-    ├── Protocol.h
-    ├── CryptoHelper.h / .cpp
-    ├── InputManager.h / .cpp
-    ├── NetworkManager.h / .cpp
-    └── (no generated files — clean build tree)
+    ├── AppConfig.* / AppState.*
+    ├── ClientRuntime.* / ClipboardManager.*
+    ├── CryptoHelper.* / Discovery.*
+    ├── InputDispatcher.* / InputManager.*
+    ├── MediaKeyBridge.*
+    ├── NetworkManager.*
+    ├── PeerRecovery.* / SecretStore.*
+    ├── Protocol.h / ReconnectPolicy.h / ScreenGeometry.h
+    ├── TrayController.cpp
+    └── main.cpp
 ```
 
 ## Build
@@ -132,6 +138,13 @@ cmake -S . -B build
 cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
 ```
+
+Optional desktop/runtime helpers:
+
+- `zenity` for the desktop controller
+- `wl-clipboard`, `xclip`, or `xsel` for clipboard sync
+- `playerctl` for MPRIS media-key dispatch
+- GTK 3 plus Ayatana AppIndicator development packages if you want the optional `mwb_tray` binary
 
 ### Sanitizer debug build
 
@@ -184,7 +197,8 @@ The client uses this order:
 4. Enabled connector modes from `/sys/class/drm`
 5. A 1920×1080 fallback
 
-Automatic sizing is usually good enough on KDE Plasma Wayland and straightforward single-desktop setups. Explicit overrides are mainly useful on unusual multi-monitor layouts, mixed-DPI desktops, or inside containers where `/sys/class/drm` may not reflect the host desktop accurately.
+CLI overrides win over environment variables, and environment variables win over values loaded from `config.ini`.
+Automatic sizing is usually good enough on KDE Plasma Wayland and straightforward single-desktop setups. Explicit overrides are mainly useful on unusual multi-monitor layouts, mixed-DPI desktops, or inside containers where automatic detection may not reflect the host desktop accurately.
 
 Example:
 
@@ -324,8 +338,10 @@ Useful `run` options:
 ./build/mwb_client run --host 192.0.2.10 --key MySecurityKey123 --name fedora
 ./build/mwb_client run --host 192.0.2.10 --key-file ~/.config/mwb-client/security-key --name fedora
 ./build/mwb_client run --host 192.0.2.10 --key-secret-id desktop-default --name fedora
+./build/mwb_client run --config ~/.config/mwb-client/config.ini --screen-width 2560 --screen-height 1600
 ./build/mwb_client run --config ~/.config/mwb-client/config.ini --clipboard-receive-only
 ./build/mwb_client run --config ~/.config/mwb-client/config.ini --manual-only
+./build/mwb_client run --config ~/.config/mwb-client/config.ini --mpris-player spotify
 ```
 
 - `WINDOWS_IP` — IP address of the Windows machine running PowerToys MWB
@@ -465,7 +481,7 @@ For Fedora/KDE/GNOME, the repo includes a lightweight Zenity desktop controller:
 ./mwb-desktop-ui.sh
 ```
 
-It edits config, runs discovery, starts/stops the `systemd --user` service, and can install a `.desktop` launcher for itself.
+It edits config, runs discovery, shows known peers, starts/stops/restarts the `systemd --user` service, and can install desktop entries for itself and the tray controller.
 The settings flow supports an inline security key, a separate key-file path, or a Secret Service-backed desktop-keyring entry, plus clipboard, screen-size override, MPRIS media-key, and input-latency diagnostic options.
 The dedicated Connection Behavior screen lets you switch between auto-connect and manual mode and tune the reconnect timing without editing `config.ini` by hand.
 The discovery and known-peer views show whether a peer is already paired, whether it is connected now, and whether it is the configured host.
@@ -489,7 +505,7 @@ The InputFlow tray menu can:
 - jump directly to settings, peer discovery, known peers, and service details
 - start, stop, or restart `mwb-client.service`
 - show current service status
-- show tray visibility help and install desktop launchers
+- show tray visibility help and install desktop entries
 
 On GNOME/Wayland, tray visibility still depends on AppIndicator support in the shell environment, so the Zenity controller remains the primary fallback.
 When the tray is available, the controller and tray share the same peer-management flow, including discovery, known-peer actions, and service control.
@@ -566,14 +582,15 @@ The PowerToys MWB protocol uses:
 - **IV:** Fixed string `"1844674407370955"` (ASCII, 16 bytes)
 - **Magic number:** 24-bit hash of the security key via 50 000 rounds of SHA-512
 - **Packet sizes:** 32 bytes (small: mouse, keyboard, small heartbeat) or 64 bytes (big: handshake, identity, matrix)
-- **Handshake:** Both sides exchange 10× type-126 challenge packets; each responds with a type-127 acknowledgement carrying the bitwise-NOT of the received challenge fields
-- **Identity:** Type-51 heartbeat packets carry the machine name (ASCII, space-padded to 32 bytes) and screen dimensions
+- **Handshake:** Both sides exchange type-126 challenge packets and respond with type-127 acknowledgements carrying the bitwise-NOT of the received 16-byte challenge payload
+- **Post-handshake control:** `Hello` (3), `Heartbeat` (20), `Awake` (21), and `Heartbeat_ex` / `Heartbeat_ex_l2` / `Heartbeat_ex_l3` (51/52/53) are used for identity, keepalive, and peer-registration flow
 
 The machine name sent by this client must match the name configured in Windows's MWB machine list.
 
 ## Known Limitations
 
 - Outside KDE Wayland sessions, automatic screen sizing from `/sys/class/drm` assumes enabled outputs form one horizontal desktop. Use `screen_width`/`screen_height` or `MWB_SCREEN_WIDTH`/`MWB_SCREEN_HEIGHT` for stacked displays, mixed-DPI layouts, or containerized runs. Incorrect geometry means incorrect absolute pointer scaling.
+- Some PowerToys builds still do not persist a blank-state Linux peer automatically. In that case, use the exported Windows pairing helper first.
 - Clipboard sync currently writes text to the local Linux clipboard. The protocol parser preserves CF_HTML metadata internally for richer future backends, but local multi-MIME HTML ownership, image clipboard data, and drag/drop file transfer are not implemented.
 - Wayland compositor handling of synthetic absolute `uinput` pointer devices varies. If cursor reachability breaks, run once with `MWB_MOUSE_TRACE=200`, reproduce the issue, then stop the service and inspect the dumped packet trace.
 

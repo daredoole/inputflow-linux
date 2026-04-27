@@ -46,7 +46,16 @@ void HandleStopSignal(int) {
 void PrintGeneralUsage(std::ostream& out, const char* argv0) {
     const std::string binary = std::filesystem::path(argv0).filename().string();
     out << "Usage: " << binary << " <WINDOWS_IP> <SECURITY_KEY> [PORT]\n";
-    out << "       " << binary << " run [--config PATH] [--state PATH] [--host IP] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME] [--port PORT] [--latency-report]\n";
+    out << "       " << binary
+        << " run [--config PATH] [--state PATH] [--host IP] [--key KEY | --key-file PATH | --key-secret-id ID]"
+        << " [--name NAME] [--port PORT]"
+        << " [--enable-clipboard | --disable-clipboard | --clipboard-receive-only | --clipboard-full]"
+        << " [--clipboard-force-poll] [--clipboard-poll-ms MS]"
+        << " [--screen-width PX --screen-height PX]"
+        << " [--enable-mpris-media-keys | --disable-mpris-media-keys] [--mpris-player PLAYER]"
+        << " [--auto-connect | --manual-only]"
+        << " [--reconnect-initial-backoff-ms MS] [--reconnect-max-backoff-ms MS] [--reconnect-idle-retry-ms MS]"
+        << " [--latency-report]\n";
     out << "       " << binary << " discover [--state PATH] [--port PORT] [--timeout-ms MS] [--max-hosts N]\n";
     out << "       " << binary << " doctor [--config PATH]\n";
     out << "       " << binary << " init-config [--config PATH] [--force] [--host IP] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME] [--port PORT]\n";

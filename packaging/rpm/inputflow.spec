@@ -3,8 +3,8 @@ Version:        0.1.0
 Release:        1%{?dist}
 Summary:        Linux client for PowerToys Mouse Without Borders
 
-License:        MIT
-URL:            https://github.com/daredoole/mwb-client-linux
+License:        GPL-3.0-only
+URL:            https://github.com/daredoole/inputflow-linux
 Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  cmake
