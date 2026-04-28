@@ -45,19 +45,20 @@ The desktop controller shows the same health check together with the user servic
 ./mwb-desktop-ui.sh status
 ```
 
-Review warnings for missing `/dev/uinput` access, missing `inputflow` group membership, missing packaged files, unavailable clipboard helpers, or invalid authentication configuration.
+Review warnings for missing `/dev/uinput` access, Wayland input-gating, missing `inputflow` group membership, missing packaged files, unavailable clipboard helpers, unavailable Secret Service/session bus, or invalid authentication configuration.
 
 ## Diagnostics Bundle
 
-Until a one-click diagnostics bundle command is available, collect this minimal bundle for beta reports:
+Create a redacted support bundle before filing beta reports:
 
 ```bash
-./build/mwb_client doctor --config ~/.config/mwb-client/config.ini > inputflow-doctor.txt
-systemctl --user status --no-pager mwb-client.service > inputflow-service-status.txt
-journalctl --user -u mwb-client.service --since "30 minutes ago" --no-pager > inputflow-service-log.txt
+./scripts/inputflow-diagnostics-bundle.sh \
+  --config ~/.config/mwb-client/config.ini \
+  --state ~/.local/state/mwb-client/state.ini \
+  --output .
 ```
 
-Also include `~/.config/mwb-client/config.ini` with `key`, `key_file`, `key_secret_id`, Windows IPs, and hostnames redacted as needed. Do not attach exported Windows helper scripts or unredacted Secret Service identifiers to public issues.
+The archive includes `summary.json` for machine-readable triage, redacted config/state summaries, session and `/dev/uinput` checks, package/build details, service status, recent user-service journal lines, and `mwb_client doctor` output. Review the archive before posting publicly. Do not attach exported Windows helper scripts or unredacted Secret Service identifiers to public issues.
 
 ## Connection Quality
 

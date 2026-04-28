@@ -1648,9 +1648,11 @@ int HandleDoctorCommand(const std::vector<std::string>& args) {
     PrintDoctorLine("INFO", "drm", DrmSummary());
 
     const std::filesystem::path uinputPath("/dev/uinput");
+    const bool uinputExists = std::filesystem::exists(uinputPath);
+    const bool uinputWritable = uinputExists && access(uinputPath.c_str(), W_OK) == 0;
     PrintDoctorLine(std::filesystem::exists("/sys/module/uinput") ? "OK" : "WARN", "uinput module",
         std::filesystem::exists("/sys/module/uinput") ? "loaded" : "not loaded");
-    if (!std::filesystem::exists(uinputPath)) {
+    if (!uinputExists) {
         PrintDoctorLine("WARN", "uinput", "/dev/uinput missing; load the uinput kernel module");
     } else {
         struct stat uinputStat {};
@@ -1658,7 +1660,7 @@ int HandleDoctorCommand(const std::vector<std::string>& args) {
         const std::string detail = haveStat
             ? "/dev/uinput group=" + GroupName(uinputStat.st_gid) + " mode=" + FormatMode(uinputStat.st_mode)
             : "/dev/uinput exists";
-        PrintDoctorLine(access(uinputPath.c_str(), W_OK) == 0 ? "OK" : "WARN", "uinput", detail);
+        PrintDoctorLine(uinputWritable ? "OK" : "WARN", "uinput", detail);
     }
 
     if (getgrnam("inputflow") == nullptr) {
@@ -1688,6 +1690,12 @@ int HandleDoctorCommand(const std::vector<std::string>& args) {
     } else {
         PrintDoctorLine("WARN", "session", "no Wayland or X11 session variables detected");
     }
+    const bool waylandSession = sessionType != nullptr && std::string(sessionType) == "wayland";
+    if (waylandSession && !uinputWritable) {
+        PrintDoctorLine("WARN", "wayland input", "Wayland session detected but /dev/uinput is not writable; compositor-mediated injection may still require user approval");
+    } else if (waylandSession) {
+        PrintDoctorLine("INFO", "wayland input", "/dev/uinput is writable; compositor policy may still gate input injection");
+    }
 
     if (const char* desktop = std::getenv("XDG_CURRENT_DESKTOP"); desktop != nullptr && *desktop != '\0') {
         PrintDoctorLine("INFO", "desktop", desktop);
@@ -1697,6 +1705,14 @@ int HandleDoctorCommand(const std::vector<std::string>& args) {
         " DISPLAY=" + EnvValueOrUnset("DISPLAY"));
     PrintDoctorLine("INFO", "runtime env", "XDG_RUNTIME_DIR=" + EnvValueOrUnset("XDG_RUNTIME_DIR") +
         " DBUS_SESSION_BUS_ADDRESS=" + EnvValueOrUnset("DBUS_SESSION_BUS_ADDRESS"));
+    if (FindExecutableInPath("secret-tool")) {
+        PrintDoctorLine("OK", "secret service tool", "secret-tool available");
+    } else {
+        PrintDoctorLine("INFO", "secret service tool", "secret-tool unavailable; key_secret_id depends on libsecret support and an unlocked session");
+    }
+    if (!config.keySecretId.empty() && EnvValueOrUnset("DBUS_SESSION_BUS_ADDRESS") == "<unset>") {
+        PrintDoctorLine("WARN", "secret service", "key_secret_id is configured but the D-Bus session bus is not advertised");
+    }
 
     if (FindExecutableInPath("wl-copy") && FindExecutableInPath("wl-paste")) {
         PrintDoctorLine("OK", "clipboard helpers", "wl-clipboard");
