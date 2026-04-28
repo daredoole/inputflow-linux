@@ -13,7 +13,7 @@ Recommended first-run flow for most users:
    - **Fedora:** `sudo dnf install python3-gobject gtk3 libayatana-appindicator3`
    - **Ubuntu/Debian:** `sudo apt install python3-gi gir1.2-gtk-3.0 libayatana-appindicator3-0.1`
 2. **Launch Setup UI:** Run `./mwb-desktop-ui.sh menu`
-3. **Configure:** 
+3. **Configure:**
    - Go to **Settings** -> Enter your Windows Host IP and Security Key.
 4. **Pair with Windows:**
    - In the same UI, use the **Export Helper** option.

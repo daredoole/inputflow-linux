@@ -12,7 +12,6 @@
 #include <fcntl.h>
 #include <locale>
 #include <memory>
-#include <iostream>
 #include <poll.h>
 #include <signal.h>
 #include <sstream>
@@ -1052,10 +1051,6 @@ std::unique_ptr<ClipboardBackend> createBackend() {
 } // namespace
 
 std::optional<ClipboardPayload> ExternalCommandClipboardBackend::ReadPayload() {
-    static int callCount = 0;
-    if (++callCount % 10 == 0) {
-        std::cout << "[DEBUG] Clipboard ReadPayload called " << callCount << " times" << std::endl;
-    }
     auto types = runReadCommand(m_listTypesCommand);
     auto plainText = runReadCommand(m_readTextCommand);
 
