@@ -31,6 +31,10 @@ struct TrayContext {
     GtkWidget* openControllerItem{nullptr};
     GtkWidget* editSettingsItem{nullptr};
     GtkWidget* editConnectionItem{nullptr};
+    GtkWidget* healthCheckItem{nullptr};
+    GtkWidget* diagnosticsBundleItem{nullptr};
+    GtkWidget* connectionQualityItem{nullptr};
+    GtkWidget* guidedPairingItem{nullptr};
     GtkWidget* discoverPeersItem{nullptr};
     GtkWidget* showPeersItem{nullptr};
     GtkWidget* trayHelpItem{nullptr};
@@ -392,6 +396,10 @@ void UpdateIndicatorVisuals(TrayContext* context, const std::string& state) {
     const bool controllerAvailable = !context->controllerPath.empty();
     gtk_widget_set_sensitive(context->editSettingsItem, controllerAvailable);
     gtk_widget_set_sensitive(context->editConnectionItem, controllerAvailable);
+    gtk_widget_set_sensitive(context->healthCheckItem, controllerAvailable);
+    gtk_widget_set_sensitive(context->diagnosticsBundleItem, controllerAvailable);
+    gtk_widget_set_sensitive(context->connectionQualityItem, controllerAvailable);
+    gtk_widget_set_sensitive(context->guidedPairingItem, controllerAvailable);
     gtk_widget_set_sensitive(context->discoverPeersItem, controllerAvailable);
     gtk_widget_set_sensitive(context->showPeersItem, controllerAvailable);
     gtk_widget_set_sensitive(context->trayHelpItem, TRUE);
@@ -477,6 +485,26 @@ void OnEditConnectionBehavior(GtkMenuItem*, gpointer userData) {
     (void)LaunchController(context, {"connection"});
 }
 
+void OnHealthCheck(GtkMenuItem*, gpointer userData) {
+    auto* context = static_cast<TrayContext*>(userData);
+    (void)LaunchController(context, {"health-check"});
+}
+
+void OnDiagnosticsBundle(GtkMenuItem*, gpointer userData) {
+    auto* context = static_cast<TrayContext*>(userData);
+    (void)LaunchController(context, {"diagnostics-bundle"});
+}
+
+void OnConnectionQuality(GtkMenuItem*, gpointer userData) {
+    auto* context = static_cast<TrayContext*>(userData);
+    (void)LaunchController(context, {"connection-quality"});
+}
+
+void OnGuidedPairing(GtkMenuItem*, gpointer userData) {
+    auto* context = static_cast<TrayContext*>(userData);
+    (void)LaunchController(context, {"guided-pairing"});
+}
+
 void OnDiscoverPeers(GtkMenuItem*, gpointer userData) {
     auto* context = static_cast<TrayContext*>(userData);
     (void)LaunchController(context, {"discover"});
@@ -553,6 +581,10 @@ int main(int argc, char** argv) {
 
     context.editSettingsItem = AddMenuItem(menu, "Settings", G_CALLBACK(OnEditSettings), &context);
     context.editConnectionItem = AddMenuItem(menu, "Connection Behavior", G_CALLBACK(OnEditConnectionBehavior), &context);
+    context.healthCheckItem = AddMenuItem(menu, "Health Check", G_CALLBACK(OnHealthCheck), &context);
+    context.diagnosticsBundleItem = AddMenuItem(menu, "Diagnostics Bundle", G_CALLBACK(OnDiagnosticsBundle), &context);
+    context.connectionQualityItem = AddMenuItem(menu, "Connection Quality", G_CALLBACK(OnConnectionQuality), &context);
+    context.guidedPairingItem = AddMenuItem(menu, "Guided Pairing", G_CALLBACK(OnGuidedPairing), &context);
     context.discoverPeersItem = AddMenuItem(menu, "Discover Peers", G_CALLBACK(OnDiscoverPeers), &context);
     context.showPeersItem = AddMenuItem(menu, "Known Peers", G_CALLBACK(OnShowPeers), &context);
 

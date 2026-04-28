@@ -20,6 +20,8 @@ Recommended first-run flow for most users:
    - Run the exported `.ps1` script on your Windows machine to register the Linux peer.
 5. **Start:** Choose **Start Service** or launch the tray with `./build/mwb_tray`.
 
+For the full beta setup, health-check, diagnostics, connection-quality, and packaging-verification workflow, see [docs/beta-workflow.md](docs/beta-workflow.md).
+
 ---
 
 ## 🛠️ Build & Installation
@@ -92,6 +94,13 @@ For power users who prefer manual control:
 ```
 
 See the full [documentation section](#detailed-documentation) for environment variables and protocol details.
+
+User-facing beta operations:
+
+- [Guided Windows pairing and export helper](docs/beta-workflow.md#guided-pairing-and-export-helper)
+- [Health checks and diagnostics bundle](docs/beta-workflow.md#health-check)
+- [Connection quality and latency reporting](docs/beta-workflow.md#connection-quality)
+- [Packaging verification](docs/beta-workflow.md#packaging-verification)
 
 <a name="detailed-documentation"></a>
 ## Detailed Documentation

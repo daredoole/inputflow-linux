@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=InputFlow Controller
+Comment=Configure and monitor InputFlow
+Exec=/usr/libexec/inputflow/mwb-desktop-ui.sh menu
+Icon=inputflow
+Terminal=false
+Categories=Utility;RemoteAccess;
+StartupNotify=false
