@@ -1,0 +1,24 @@
+# Build artifacts
+build/
+build-*/
+
+# Working/research files not for public release
+gemini/
+implementation_plan.md
+master_verification_protocol.md
+task.md
+verification_mandate.md
+walkthrough.md
+mwb-*.log
+tmp.*
+mwb-windows-report-*.txt
+mwb-lock-report-*.txt
+mwb-socket-trace-*.txt
+inputflow-windows-pair-*.ps1
+AGENTS.md
+
+# Editor / OS noise
+.vscode/
+*.swp
+*~
+.DS_Store
