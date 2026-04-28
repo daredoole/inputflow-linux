@@ -17,7 +17,7 @@ struct AppConfig {
     bool clipboardEnabled{true};
     bool clipboardSendEnabled{true};
     bool clipboardForcePoll{false};
-    int clipboardPollMs{1000};
+    int clipboardPollMs{5000};
     bool autoConnectEnabled{true};
     int reconnectInitialBackoffMs{1000};
     int reconnectMaxBackoffMs{30000};

@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <locale>
 #include <memory>
+#include <iostream>
 #include <poll.h>
 #include <signal.h>
 #include <sstream>
@@ -68,6 +69,11 @@ private:
     CommandSpec m_watchCommand;
     CommandSpec m_watchReadCommand;
     std::string m_watchSignalNeedle;
+
+    std::mutex m_cacheMutex;
+    std::string m_lastTypes;
+    std::optional<std::string> m_lastPlainText;
+    std::optional<ClipboardPayload> m_cachedPayload;
 };
 
 bool writeAll(int fd, const uint8_t* data, std::size_t length) {
@@ -1046,8 +1052,24 @@ std::unique_ptr<ClipboardBackend> createBackend() {
 } // namespace
 
 std::optional<ClipboardPayload> ExternalCommandClipboardBackend::ReadPayload() {
+    static int callCount = 0;
+    if (++callCount % 10 == 0) {
+        std::cout << "[DEBUG] Clipboard ReadPayload called " << callCount << " times" << std::endl;
+    }
     auto types = runReadCommand(m_listTypesCommand);
+    auto plainText = runReadCommand(m_readTextCommand);
+
+    {
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        if (m_cachedPayload && types == m_lastTypes && plainText == m_lastPlainText) {
+            return m_cachedPayload;
+        }
+        m_lastTypes = types.value_or("");
+        m_lastPlainText = plainText;
+    }
+
     ClipboardPayload payload;
+    payload.plainText = plainText;
 
     bool hasHtml = false;
     bool hasImage = false;
@@ -1070,7 +1092,10 @@ std::optional<ClipboardPayload> ExternalCommandClipboardBackend::ReadPayload() {
         }
     }
 
-    payload.plainText = runReadCommand(m_readTextCommand);
+    {
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        m_cachedPayload = payload;
+    }
 
     if (!payload.plainText && !payload.html && !payload.image) {
         return std::nullopt;
@@ -1079,6 +1104,13 @@ std::optional<ClipboardPayload> ExternalCommandClipboardBackend::ReadPayload() {
 }
 
 bool ExternalCommandClipboardBackend::WritePayload(const ClipboardPayload& payload) {
+    {
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        m_cachedPayload = payload;
+        m_lastTypes.clear(); // Force re-list on next poll
+        m_lastPlainText = payload.plainText;
+    }
+
     if (payload.image) {
         CommandSpec cmd = m_writeCommand;
         if (m_name.find("wl-clipboard") != std::string::npos) {

@@ -1169,31 +1169,30 @@ void NetworkManager::FinalizeInlineClipboardTransfer() {
         return;
     }
 
-    if (type == static_cast<uint8_t>(PackageType::ClipboardText)) {
-        const auto decoded = ClipboardManager::DecodePayload(payload);
-        if (decoded.has_value()) {
-            DeliverClipboardPayload(*decoded);
-        } else {
-            std::cerr << "WARN: Failed to decode inline clipboard text payload." << std::endl;
-        }
-        return;
-    }
-
-    if (type == static_cast<uint8_t>(PackageType::ClipboardImage)) {
-        auto imageBytes = ClipboardManager::DecodeImagePayload(payload);
-        if (imageBytes.has_value()) {
-            // PowerToys often pads images with null bytes up to the next block size.
-            // Truncate to the actual image size if it's a known format like PNG.
-            // (89 50 4E 47 ... 49 45 4E 44 AE 42 60 82 for PNG)
-            // For now, let's just trim all trailing nulls.
-            while (!imageBytes->empty() && imageBytes->back() == 0) {
-                imageBytes->pop_back();
+    std::thread([this, payload = std::move(payload), type]() mutable {
+        if (type == static_cast<uint8_t>(PackageType::ClipboardText)) {
+            const auto decoded = ClipboardManager::DecodePayload(payload);
+            if (decoded.has_value()) {
+                DeliverClipboardPayload(*decoded);
+            } else {
+                std::cerr << "WARN: Failed to decode inline clipboard text payload." << std::endl;
             }
-            DeliverClipboardPayload(ClipboardManager::MakeImagePayload("image/png", std::move(*imageBytes)));
-        } else {
-            std::cerr << "WARN: Failed to decode inline clipboard image payload." << std::endl;
+            return;
         }
-    }
+
+        if (type == static_cast<uint8_t>(PackageType::ClipboardImage)) {
+            auto imageBytes = ClipboardManager::DecodeImagePayload(payload);
+            if (imageBytes.has_value()) {
+                // PowerToys often pads images with null bytes up to the next block size.
+                while (!imageBytes->empty() && imageBytes->back() == 0) {
+                    imageBytes->pop_back();
+                }
+                DeliverClipboardPayload(ClipboardManager::MakeImagePayload("image/png", std::move(*imageBytes)));
+            } else {
+                std::cerr << "WARN: Failed to decode inline clipboard image payload." << std::endl;
+            }
+        }
+    }).detach();
 }
 
 void NetworkManager::DeliverClipboardPayload(const ClipboardPayload& payload) {
@@ -1702,7 +1701,7 @@ void NetworkManager::RunLoop() {
                 }
                 continue;
             }
-            reconnectState = ResetReconnectAfterSuccess(reconnectPolicy);
+            // Do NOT reset reconnectState here; wait for handshake success
         }
 
         uint8_t serverNoise[16];
@@ -1711,6 +1710,14 @@ void NetworkManager::RunLoop() {
                 fprintf(stderr, "[OUTBOUND] Failed to receive server noise\n");
             }
             closeSocket(m_socket);
+
+            const int scheduledBackoffMs = ScheduledReconnectDelayMs(reconnectPolicy, reconnectState);
+            const int delayMs = AddReconnectJitter(scheduledBackoffMs);
+            std::cout << "[RECONNECT] Protocol error (noise). Retrying in " << delayMs << " ms." << std::endl;
+            reconnectState = AdvanceReconnectAfterFailure(reconnectPolicy, reconnectState);
+            if (!SleepWithStop(m_running, delayMs)) {
+                break;
+            }
             continue;
         }
 
@@ -1719,6 +1726,14 @@ void NetworkManager::RunLoop() {
         if (!m_crypto.DecryptStream(encryptedNoise, ignoredNoise)) {
             fprintf(stderr, "[OUTBOUND] Failed to decrypt server noise\n");
             closeSocket(m_socket);
+
+            const int scheduledBackoffMs = ScheduledReconnectDelayMs(reconnectPolicy, reconnectState);
+            const int delayMs = AddReconnectJitter(scheduledBackoffMs);
+            std::cout << "[RECONNECT] Crypto error (noise). Retrying in " << delayMs << " ms." << std::endl;
+            reconnectState = AdvanceReconnectAfterFailure(reconnectPolicy, reconnectState);
+            if (!SleepWithStop(m_running, delayMs)) {
+                break;
+            }
             continue;
         }
 
@@ -1821,6 +1836,14 @@ void NetworkManager::RunLoop() {
         if (!m_handshakeDone) {
             fprintf(stderr, "[OUTBOUND] Handshake failed, will reconnect\n");
             closeSocket(m_socket);
+
+            const int scheduledBackoffMs = ScheduledReconnectDelayMs(reconnectPolicy, reconnectState);
+            const int delayMs = AddReconnectJitter(scheduledBackoffMs);
+            std::cout << "[RECONNECT] Handshake failed. Retrying in " << delayMs << " ms." << std::endl;
+            reconnectState = AdvanceReconnectAfterFailure(reconnectPolicy, reconnectState);
+            if (!SleepWithStop(m_running, delayMs)) {
+                break;
+            }
             continue;
         }
 

@@ -313,26 +313,28 @@ int ClientRuntime::Run() {
         }
         m_network->SetClipboardProvider(m_clipboard->MakeProvider());
         m_network->SetOnClipboardCallback([this](const ClipboardPayload& payload) {
-            if (!m_clipboard->SetPayload(payload)) {
-                std::cerr << "WARN: Failed to write incoming clipboard payload through backend '"
-                          << m_clipboard->BackendName() << "'." << std::endl;
-                return;
-            }
-
-            {
-                std::lock_guard<std::mutex> lock(m_clipboardStateMutex);
-                m_lastClipboardPayload = payload;
-            }
-
-            if (payload.image) {
-                std::cout << "[CLIPBOARD] Received image update (" << payload.image->bytes.size() << " bytes). Header: ";
-                for (std::size_t i = 0; i < std::min(payload.image->bytes.size(), static_cast<std::size_t>(8)); ++i) {
-                    printf("%02x ", payload.image->bytes[i]);
+            std::thread([this, payload]() {
+                if (!m_clipboard->SetPayload(payload)) {
+                    std::cerr << "WARN: Failed to write incoming clipboard payload through backend '"
+                              << m_clipboard->BackendName() << "'." << std::endl;
+                    return;
                 }
-                std::cout << std::endl;
-            } else if (payload.plainText) {
-                std::cout << "[CLIPBOARD] Received text update (" << payload.plainText->size() << " bytes)" << std::endl;
-            }
+
+                {
+                    std::lock_guard<std::mutex> lock(m_clipboardStateMutex);
+                    m_lastClipboardPayload = payload;
+                }
+
+                if (payload.image) {
+                    std::cout << "[CLIPBOARD] Received image update (" << payload.image->bytes.size() << " bytes). Header: ";
+                    for (std::size_t i = 0; i < std::min(payload.image->bytes.size(), static_cast<std::size_t>(8)); ++i) {
+                        printf("%02x ", payload.image->bytes[i]);
+                    }
+                    std::cout << std::endl;
+                } else if (payload.plainText) {
+                    std::cout << "[CLIPBOARD] Received text update (" << payload.plainText->size() << " bytes)" << std::endl;
+                }
+            }).detach();
         });
     } else if (!m_options.clipboardEnabled) {
         std::cerr << "WARN: Clipboard sync disabled by configuration." << std::endl;
