@@ -834,7 +834,7 @@ edit_settings() {
   local host key key_file secret_id secret_key_name machine_name port screen_width screen_height auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms clipboard_enabled clipboard_force_poll clipboard_poll_ms
   local clipboard_send_enabled current_auth_mode auth_action key_mode cleanup_secret_id saved_message
   local mpris_media_keys_enabled mpris_player latency_report gui_output
-  
+
   host="$(read_config_value host)"
   key="$(read_config_value key)"
   key_file="$(read_config_value key_file)"

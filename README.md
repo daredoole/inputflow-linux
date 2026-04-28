@@ -53,7 +53,7 @@ Recommended first-run flow:
 1. **Prerequisites:** Build the project and install a clipboard helper such as `wl-clipboard` (Wayland) or `xclip` (X11). Ensure `python3-gi` and GTK3 are installed for the configuration dialogs.
 2. **Setup UI:** Launch the easy setup menu with:
    `./mwb-desktop-ui.sh menu`
-3. **Configure & Pair:** 
+3. **Configure & Pair:**
    - Choose **Settings** to enter your Windows Host IP and Security Key.
    - Or, choose **Peers (Discovery & Known)** to automatically find your Windows machine on the network.
 4. **Export Helper:** Once configured, the client can export a PowerShell helper to Windows with:

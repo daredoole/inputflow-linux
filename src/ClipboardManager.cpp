@@ -1073,7 +1073,7 @@ std::optional<ClipboardPayload> ExternalCommandClipboardBackend::ReadPayload() {
     }
 
     payload.plainText = runReadCommand(m_readTextCommand);
-    
+
     if (!payload.plainText && !payload.html && !payload.image) {
         return std::nullopt;
     }

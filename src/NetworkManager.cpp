@@ -98,6 +98,7 @@ const char* PackageTypeName(uint8_t type) {
         case PackageType::Heartbeat_ex: return "Heartbeat_ex";
         case PackageType::Heartbeat_ex_l2: return "Heartbeat_ex_l2";
         case PackageType::Heartbeat_ex_l3: return "Heartbeat_ex_l3";
+        case PackageType::Heartbeat_v2: return "Heartbeat_v2";
         default: return "Unknown";
     }
 }
@@ -471,21 +472,45 @@ std::optional<std::vector<uint8_t>> receivePacketOnSocket(
         return std::nullopt;
     }
     if (!packetHasValidMagicAndChecksum(plain, magic)) {
-        g_lastReceivePacketStatus = ReceivePacketStatus::Error;
-        if (DebugNetworkLoggingEnabled()) {
-            const uint8_t type = plain.empty() ? 0 : plain[0];
-            std::cerr << "[RECV] First packet block failed magic/checksum validation."
-                      << " type=" << static_cast<int>(type)
-                      << " magicBytes=0x" << std::hex
-                      << static_cast<int>(plain[2]) << static_cast<int>(plain[3])
-                      << " expected=0x" << ((magic >> 16) & 0xFF) << ((magic >> 24) & 0xFF)
-                      << std::dec << std::endl;
-            if (DebugPacketBytesLoggingEnabled()) {
-                std::cerr << "[RECV][INVALID] bytes=" << HexDump(plain.data(), plain.size())
-                          << std::endl;
+        const uint8_t type = plain.empty() ? 0 : plain[0];
+        // PowerToys MWB sometimes uses zero magic for clipboard socket handshake packets.
+        const bool isClipboardSocketHandshake = (type == static_cast<uint8_t>(PackageType::Clipboard) ||
+                                                  type == static_cast<uint8_t>(PackageType::ClipboardPush) ||
+                                                  type == static_cast<uint8_t>(PackageType::ClipboardAsk));
+        const bool hasZeroMagic = (plain[2] == 0 && plain[3] == 0);
+
+        if (isClipboardSocketHandshake && hasZeroMagic) {
+             // Validate checksum at least
+             uint8_t expectedChecksum = 0;
+             for (std::size_t index = 2; index < kSmallPacketSize; ++index) {
+                 expectedChecksum = static_cast<uint8_t>(expectedChecksum + plain[index]);
+             }
+             if (expectedChecksum == plain[1]) {
+                 if (DebugNetworkLoggingEnabled()) {
+                     std::cout << "[RECV] Accepting clipboard handshake packet with zero magic." << std::endl;
+                 }
+             } else {
+                 g_lastReceivePacketStatus = ReceivePacketStatus::Error;
+                 return std::nullopt;
+             }
+        } else {
+            g_lastReceivePacketStatus = ReceivePacketStatus::Error;
+            if (DebugNetworkLoggingEnabled()) {
+                std::cerr << "[RECV] First packet block failed magic/checksum validation."
+                          << " type=" << static_cast<int>(type)
+                          << " magicBytes=0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(plain[2])
+                          << std::setw(2) << std::setfill('0') << static_cast<int>(plain[3])
+                          << " expected=0x" << std::setw(2) << std::setfill('0') << ((magic >> 16) & 0xFF)
+                          << std::setw(2) << std::setfill('0') << ((magic >> 24) & 0xFF)
+                          << " checksum=0x" << std::setw(2) << std::setfill('0') << static_cast<int>(plain[1])
+                          << std::dec << std::endl;
+                if (DebugPacketBytesLoggingEnabled()) {
+                    std::cerr << "[RECV][INVALID] bytes=" << HexDump(plain.data(), plain.size())
+                              << std::endl;
+                }
             }
+            return std::nullopt;
         }
-        return std::nullopt;
     }
 
     if (!isBigPackage(plain[0])) {
@@ -603,11 +628,15 @@ bool exchangeClipboardHandshake(
     uint32_t magic,
     const std::string& machineName,
     uint32_t machineId,
+    uint32_t desId,
     const std::atomic<bool>& running,
     bool advertisePush,
     MWBPacket& remoteHeader,
     bool& remoteRequestsPush,
     std::string& remoteName) {
+    if (DebugNetworkLoggingEnabled()) {
+        std::cout << "[CLIPBOARD] Starting handshake, advertisePush=" << advertisePush << std::endl;
+    }
     std::vector<uint8_t> noise(16);
     if (!FillRandomBytes(noise.data(), noise.size())) {
         return false;
@@ -616,17 +645,20 @@ bool exchangeClipboardHandshake(
     std::vector<uint8_t> encryptedNoise;
     if (!crypto.EncryptStream(noise, encryptedNoise) ||
         !writeAll(fd, encryptedNoise.data(), encryptedNoise.size())) {
+        if (DebugNetworkLoggingEnabled()) std::cerr << "[CLIPBOARD] Handshake: Failed to write noise" << std::endl;
         return false;
     }
 
     uint8_t peerNoise[16];
     if (!readExact(fd, peerNoise, sizeof(peerNoise), running)) {
+        if (DebugNetworkLoggingEnabled()) std::cerr << "[CLIPBOARD] Handshake: Failed to read noise" << std::endl;
         return false;
     }
 
     std::vector<uint8_t> peerNoiseVec(peerNoise, peerNoise + sizeof(peerNoise));
     std::vector<uint8_t> ignoredNoise;
     if (!crypto.DecryptStream(peerNoiseVec, ignoredNoise)) {
+        if (DebugNetworkLoggingEnabled()) std::cerr << "[CLIPBOARD] Handshake: Failed to decrypt noise" << std::endl;
         return false;
     }
 
@@ -635,14 +667,22 @@ bool exchangeClipboardHandshake(
     header.type = static_cast<uint8_t>(advertisePush ? PackageType::ClipboardPush : PackageType::Clipboard);
     const uint32_t src = htole32(machineId);
     std::memcpy(&header.src, &src, sizeof(src));
+    const uint32_t des = htole32(desId != 0 ? desId : kBroadcastMachineId);
+    std::memcpy(&header.des, &des, sizeof(des));
     std::memset(&header.data[0], 0, sizeof(uint32_t)); // ClipboardPostAction::Other
 
     if (!sendPacketOnSocket(fd, crypto, magic, machineName, header, true, 0, 0, 0)) {
+        if (DebugNetworkLoggingEnabled()) std::cerr << "[CLIPBOARD] Handshake: Failed to send packet" << std::endl;
         return false;
     }
 
     auto packet = receivePacketOnSocket(fd, crypto, magic, running);
-    if (!packet || packet->size() < kBigPacketSize) {
+    if (!packet) {
+        if (DebugNetworkLoggingEnabled()) std::cerr << "[CLIPBOARD] Handshake: Failed to receive packet" << std::endl;
+        return false;
+    }
+    if (packet->size() < kBigPacketSize) {
+        if (DebugNetworkLoggingEnabled()) std::cerr << "[CLIPBOARD] Handshake: Received packet too small (" << packet->size() << ")" << std::endl;
         return false;
     }
 
@@ -650,12 +690,19 @@ bool exchangeClipboardHandshake(
     if (!remote ||
         (remote->type != static_cast<uint8_t>(PackageType::Clipboard) &&
          remote->type != static_cast<uint8_t>(PackageType::ClipboardPush))) {
+        if (DebugNetworkLoggingEnabled()) {
+             std::cerr << "[CLIPBOARD] Handshake: Received unexpected packet type "
+                       << (remote ? static_cast<int>(remote->type) : -1) << std::endl;
+        }
         return false;
     }
 
     remoteHeader = *remote;
     remoteRequestsPush = (remote->type == static_cast<uint8_t>(PackageType::ClipboardPush));
     remoteName = extractMachineName(*remote);
+    if (DebugNetworkLoggingEnabled()) {
+        std::cout << "[CLIPBOARD] Handshake success! remoteName=" << remoteName << std::endl;
+    }
     return true;
 }
 
@@ -1202,7 +1249,7 @@ std::optional<std::vector<uint8_t>> NetworkManager::SnapshotClipboardPayload(boo
             // Re-using logic from UpdatePendingClipboardPayload essentially
             // but we can't call it while holding the lock if it were to use the lock.
             // Let's just do it manually here.
-            
+
             auto payloadsEqual = [](const ClipboardPayload& a, const ClipboardPayload& b) {
                 if (a.plainText != b.plainText) return false;
                 if (a.image.has_value() != b.image.has_value()) return false;
@@ -1483,12 +1530,12 @@ void NetworkManager::RequestRemoteClipboard(uint32_t expectedRemoteMachineId) {
     }
 
     CryptoHelper crypto(m_key);
-    const uint32_t magic = crypto.Get24BitHash();
+    const uint32_t magic = 0; // PowerToys often uses zero magic for secondary clipboard socket
     bool remotePush = false;
     std::string remoteName;
     MWBPacket remoteHeader;
     std::memset(&remoteHeader, 0, sizeof(remoteHeader));
-    if (!exchangeClipboardHandshake(fd, crypto, magic, m_myName, m_myId, m_running, false, remoteHeader, remotePush, remoteName)) {
+    if (!exchangeClipboardHandshake(fd, crypto, magic, m_myName, m_myId, expectedRemoteMachineId, m_running, false, remoteHeader, remotePush, remoteName)) {
         std::cerr << "WARN: Clipboard pull handshake failed." << std::endl;
         closeSocket(fd);
         return;
@@ -1572,12 +1619,12 @@ void NetworkManager::PushClipboardToRemote(uint32_t expectedRemoteMachineId) {
     }
 
     CryptoHelper crypto(m_key);
-    const uint32_t magic = crypto.Get24BitHash();
+    const uint32_t magic = 0; // PowerToys often uses zero magic for secondary clipboard socket
     bool remotePush = false;
     std::string remoteName;
     MWBPacket remoteHeader;
     std::memset(&remoteHeader, 0, sizeof(remoteHeader));
-    if (!exchangeClipboardHandshake(fd, crypto, magic, m_myName, m_myId, m_running, true, remoteHeader, remotePush, remoteName)) {
+    if (!exchangeClipboardHandshake(fd, crypto, magic, m_myName, m_myId, expectedRemoteMachineId, m_running, true, remoteHeader, remotePush, remoteName)) {
         std::cerr << "WARN: Clipboard push handshake failed." << std::endl;
         closeSocket(fd);
         return;
@@ -2345,12 +2392,12 @@ void NetworkManager::HandleClipboardConnection(int fd) {
     TrackSessionSocket(fd);
 
     CryptoHelper crypto(m_key);
-    const uint32_t magic = crypto.Get24BitHash();
+    const uint32_t magic = 0; // PowerToys often uses zero magic for secondary clipboard socket
     bool remoteRequestsPush = false;
     std::string remoteName;
     MWBPacket remoteHeader;
     std::memset(&remoteHeader, 0, sizeof(remoteHeader));
-    if (!exchangeClipboardHandshake(fd, crypto, magic, m_myName, m_myId, m_running, true, remoteHeader, remoteRequestsPush, remoteName)) {
+    if (!exchangeClipboardHandshake(fd, crypto, magic, m_myName, m_myId, 0, m_running, true, remoteHeader, remoteRequestsPush, remoteName)) {
         closeSocket(fd);
         return;
     }

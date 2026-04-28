@@ -23,7 +23,7 @@ class ConfigDialog(Gtk.Window):
         for i, (key, label, type) in enumerate(fields):
             lbl = Gtk.Label(label=label, xalign=0)
             grid.attach(lbl, 0, i, 1, 1)
-            
+
             value = current_values.get(key, "")
 
             if type == "entry":
@@ -44,7 +44,7 @@ class ConfigDialog(Gtk.Window):
                 widget = Gtk.ComboBoxText()
                 for opt in options[1:]:
                     widget.append_text(opt)
-                
+
                 # Find current index
                 active_idx = 0
                 for idx, opt in enumerate(options[1:]):
