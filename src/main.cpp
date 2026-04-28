@@ -57,7 +57,7 @@ void PrintGeneralUsage(std::ostream& out, const char* argv0) {
         << " [--reconnect-initial-backoff-ms MS] [--reconnect-max-backoff-ms MS] [--reconnect-idle-retry-ms MS]"
         << " [--latency-report]\n";
     out << "       " << binary << " discover [--state PATH] [--port PORT] [--timeout-ms MS] [--max-hosts N]\n";
-    out << "       " << binary << " doctor [--config PATH]\n";
+    out << "       " << binary << " doctor [--config PATH] [--state PATH]\n";
     out << "       " << binary << " init-config [--config PATH] [--force] [--host IP] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME] [--port PORT]\n";
     out << "       " << binary << " export-windows-pair [--config PATH] [--output PATH] [--force] [--linux-ip IP] [--position auto|top-left|top-right|bottom-left|bottom-right] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME]\n";
     out << "       " << binary << " install-user-service [--config PATH] [--unit PATH] [--force]\n";
@@ -949,6 +949,18 @@ std::int64_t CurrentEpochSeconds() {
         .count();
 }
 
+std::filesystem::path ResolveRelativeTo(const std::filesystem::path& path,
+                                        const std::filesystem::path& baseDirectory) {
+    if (path.empty() || path.is_absolute()) {
+        return path;
+    }
+    return baseDirectory / path;
+}
+
+std::string BoolToken(bool value) {
+    return value ? "yes" : "no";
+}
+
 bool LoadOptionalState(const std::filesystem::path& statePath, mwb::AppState& state) {
     if (!std::filesystem::exists(statePath)) {
         return true;
@@ -969,6 +981,116 @@ bool SaveStateOrReport(const std::filesystem::path& statePath, const mwb::AppSta
         return false;
     }
     return true;
+}
+
+bool FileContainsNonWhitespace(const std::filesystem::path& path) {
+    std::ifstream file(path);
+    if (!file) {
+        return false;
+    }
+
+    char ch = '\0';
+    while (file.get(ch)) {
+        if (std::isspace(static_cast<unsigned char>(ch)) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void PrintDoctorAuthKeyPresence(const mwb::AppConfig& config,
+                                const std::filesystem::path& configPath) {
+    if (!config.keySecretId.empty()) {
+        PrintDoctorLine("OK", "auth key", "key_secret_id configured");
+        return;
+    }
+    if (!config.keyFile.empty()) {
+        const std::filesystem::path keyPath = ResolveRelativeTo(config.keyFile, configPath.parent_path());
+        if (!std::filesystem::exists(keyPath)) {
+            PrintDoctorLine("WARN", "auth key", "key_file missing: " + keyPath.string());
+        } else if (!FileContainsNonWhitespace(keyPath)) {
+            PrintDoctorLine("WARN", "auth key", "key_file empty or unreadable: " + keyPath.string());
+        } else {
+            PrintDoctorLine("OK", "auth key", "key_file present: " + keyPath.string());
+        }
+        return;
+    }
+    if (!config.key.empty()) {
+        PrintDoctorLine("OK", "auth key", "inline key configured");
+        return;
+    }
+    PrintDoctorLine("WARN", "auth key", "not configured");
+}
+
+void PrintDoctorHostProbe(const mwb::AppConfig& config, int port) {
+    const std::string label = "host " + std::to_string(port);
+    if (config.host.empty()) {
+        PrintDoctorLine("INFO", label, "not checked; host not configured");
+        return;
+    }
+
+    const auto reachable = ProbeReachableIpv4Host(config.host, port, 500);
+    PrintDoctorLine(reachable.has_value() ? "OK" : "WARN", label,
+        reachable.has_value()
+            ? "tcp reachable ip=" + *reachable
+            : "tcp unreachable host=" + config.host);
+}
+
+const mwb::PeerState* FindPeerForQuality(const mwb::AppState& state,
+                                         const std::string& host,
+                                         int port) {
+    const mwb::PeerState* hostOnlyMatch = nullptr;
+    for (const auto& peer : state.peers) {
+        if (peer.host != host) {
+            continue;
+        }
+        if (peer.port == port) {
+            return &peer;
+        }
+        if (hostOnlyMatch == nullptr) {
+            hostOnlyMatch = &peer;
+        }
+    }
+    return hostOnlyMatch;
+}
+
+void PrintDoctorConnectionQuality(const mwb::AppConfig& config,
+                                  const std::filesystem::path& statePath) {
+    if (!std::filesystem::exists(statePath)) {
+        PrintDoctorLine("INFO", "state", statePath.string() + " does not exist");
+        PrintDoctorLine("INFO", "connection quality", "state=missing");
+        return;
+    }
+
+    mwb::AppState state;
+    std::string error;
+    if (!mwb::LoadAppState(statePath, state, error)) {
+        PrintDoctorLine("WARN", "state", error);
+        PrintDoctorLine("WARN", "connection quality", "state=unreadable");
+        return;
+    }
+
+    PrintDoctorLine("OK", "state", statePath.string() + " peers=" + std::to_string(state.peers.size()));
+    if (config.host.empty()) {
+        PrintDoctorLine("INFO", "connection quality", "host=missing peers=" + std::to_string(state.peers.size()));
+        return;
+    }
+
+    const mwb::PeerState* peer = FindPeerForQuality(state, config.host, config.port);
+    if (peer == nullptr) {
+        PrintDoctorLine("INFO", "connection quality",
+            "host=" + config.host + " port=" + std::to_string(config.port) + " peer_state=missing");
+        return;
+    }
+
+    const std::string detail =
+        "host=" + peer->host +
+        " port=" + std::to_string(peer->port) +
+        " approved=" + BoolToken(peer->approved) +
+        " connected_now=" + BoolToken(peer->connectedNow) +
+        " last_seen_epoch=" + std::to_string(peer->lastSeenEpochSeconds) +
+        " last_connected_epoch=" + std::to_string(peer->lastConnectedEpochSeconds);
+    PrintDoctorLine(peer->lastConnectedEpochSeconds > 0 ? "OK" : "INFO", "connection quality", detail);
 }
 
 int RunClient(const mwb::AppConfig& config,
@@ -1436,6 +1558,7 @@ int HandleDiscoverCommand(const std::string& binary, const std::vector<std::stri
 
 int HandleDoctorCommand(const std::vector<std::string>& args) {
     std::filesystem::path configPath = mwb::DefaultConfigPath();
+    std::filesystem::path statePath = mwb::DefaultStatePath();
 
     for (std::size_t index = 0; index < args.size(); ++index) {
         const std::string& arg = args[index];
@@ -1453,6 +1576,12 @@ int HandleDoctorCommand(const std::vector<std::string>& args) {
                 return 1;
             }
             configPath = *value;
+        } else if (arg == "--state") {
+            const auto value = requireValue("--state");
+            if (!value) {
+                return 1;
+            }
+            statePath = *value;
         } else {
             std::cerr << "ERR: Unknown doctor option: " << arg << std::endl;
             return 1;
@@ -1491,22 +1620,29 @@ int HandleDoctorCommand(const std::vector<std::string>& args) {
         if (!config.keySecretId.empty()) {
             PrintDoctorLine("OK", "key source", "Secret Service id '" + config.keySecretId + "'");
         } else if (!config.keyFile.empty()) {
-            std::filesystem::path keyPath = config.keyFile;
-            if (keyPath.is_relative()) {
-                keyPath = configPath.parent_path() / keyPath;
-            }
+            std::filesystem::path keyPath = ResolveRelativeTo(config.keyFile, configPath.parent_path());
             PrintDoctorLine(std::filesystem::exists(keyPath) ? "OK" : "WARN", "key file", keyPath.string());
         } else if (!config.key.empty()) {
             PrintDoctorLine("WARN", "key source", "inline key configured; prefer key_file or key_secret_id");
         } else {
             PrintDoctorLine("WARN", "key source", "not configured");
         }
+        PrintDoctorAuthKeyPresence(config, configPath);
+        PrintDoctorHostProbe(config, 15100);
+        PrintDoctorHostProbe(config, 15101);
+        PrintDoctorConnectionQuality(config, statePath);
 
         if (config.screenWidth && config.screenHeight) {
             PrintDoctorLine("OK", "screen override", std::to_string(*config.screenWidth) + "x" + std::to_string(*config.screenHeight));
         } else {
             PrintDoctorLine("INFO", "screen override", "not configured; /sys/class/drm autodetection will be used");
         }
+    }
+    if (!configExists || hasError) {
+        PrintDoctorLine("WARN", "auth key", "not checked; config unavailable");
+        PrintDoctorLine("INFO", "host 15100", "not checked; config unavailable");
+        PrintDoctorLine("INFO", "host 15101", "not checked; config unavailable");
+        PrintDoctorConnectionQuality(config, statePath);
     }
 
     PrintDoctorLine("INFO", "drm", DrmSummary());

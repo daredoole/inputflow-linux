@@ -13,6 +13,7 @@ RECONNECT_IDLE_CONFIG_KEY="${MWB_RECONNECT_IDLE_CONFIG_KEY:-reconnect_idle_retry
 MPRIS_MEDIA_KEYS_CONFIG_KEY="${MWB_MPRIS_MEDIA_KEYS_CONFIG_KEY:-mpris_media_keys_enabled}"
 MPRIS_PLAYER_CONFIG_KEY="${MWB_MPRIS_PLAYER_CONFIG_KEY:-mpris_player}"
 LATENCY_REPORT_CONFIG_KEY="${MWB_LATENCY_REPORT_CONFIG_KEY:-latency_report}"
+DIAGNOSTICS_BUNDLE_SCRIPT="$SCRIPT_DIR/scripts/inputflow-diagnostics-bundle.sh"
 DEFAULT_AUTO_CONNECT_ENABLED="${MWB_DEFAULT_AUTO_CONNECT_ENABLED:-true}"
 DEFAULT_RECONNECT_INITIAL_MS="${MWB_DEFAULT_RECONNECT_INITIAL_MS:-1000}"
 DEFAULT_RECONNECT_MAX_MS="${MWB_DEFAULT_RECONNECT_MAX_MS:-300000}"
@@ -680,12 +681,116 @@ menu_summary_text() {
 show_status() {
   local status_text doctor_text
   status_text="$(systemctl --user status --no-pager "$SERVICE_NAME" 2>&1 || true)"
-  doctor_text="$("$APP_BIN" doctor --config "$CONFIG_PATH" 2>&1 || true)"
+  doctor_text="$("$APP_BIN" doctor --config "$CONFIG_PATH" --state "$STATE_PATH" 2>&1 || true)"
   zenity --text-info --title="$APP_NAME service status" --width=900 --height=600 <<<"$doctor_text
 
 ----
 
 $status_text"
+}
+
+append_check_line() {
+  local status="$1" name="$2" detail="$3"
+  printf '%-5s %-28s %s\n' "$status" "$name" "$detail"
+}
+
+probe_tcp_port() {
+  local host="$1" port="$2"
+  MWB_PROBE_HOST="$host" MWB_PROBE_PORT="$port" timeout 2 bash -c ':</dev/tcp/$MWB_PROBE_HOST/$MWB_PROBE_PORT' >/dev/null 2>&1
+}
+
+health_check() {
+  require_client_binary || return 1
+  local host port key key_file secret_id auth_count service_status health_text doctor_text
+  host="$(read_config_value host)"
+  port="$(read_config_value port)"; [[ -n "$port" ]] || port="15101"
+  key="$(read_config_value key)"
+  key_file="$(read_config_value key_file)"
+  secret_id="$(read_secret_id_value)"
+  auth_count="$(configured_auth_source_count "$key" "$key_file" "$secret_id")"
+  service_status="$(service_state)"
+
+  health_text="$(
+    append_check_line "$([[ -f "$CONFIG_PATH" ]] && printf OK || printf WARN)" "config file" "$CONFIG_PATH"
+    append_check_line "$([[ -e /dev/uinput ]] && printf OK || printf WARN)" "uinput device" "$([[ -e /dev/uinput ]] && ls -l /dev/uinput 2>/dev/null || printf 'missing; install udev rule and reload')"
+    append_check_line "$([[ "$service_status" == "active" ]] && printf OK || printf WARN)" "user service" "$(service_state_label "$service_status")"
+    append_check_line "$([[ -n "$host" ]] && printf OK || printf WARN)" "Windows host" "${host:-not configured}"
+    append_check_line "$([[ "$auth_count" == "1" ]] && printf OK || printf WARN)" "authentication" "$(configured_auth_label "$key" "$key_file" "$secret_id")"
+    if [[ -n "$host" ]] && command -v timeout >/dev/null 2>&1; then
+      if probe_tcp_port "$host" "$port"; then
+        append_check_line OK "input port" "$host:$port reachable"
+      else
+        append_check_line WARN "input port" "$host:$port not reachable"
+      fi
+      if probe_tcp_port "$host" "15100"; then
+        append_check_line OK "clipboard port" "$host:15100 reachable"
+      else
+        append_check_line WARN "clipboard port" "$host:15100 not reachable"
+      fi
+    else
+      append_check_line WARN "port probe" "host or timeout command unavailable"
+    fi
+  )"
+  doctor_text="$("$APP_BIN" doctor --config "$CONFIG_PATH" --state "$STATE_PATH" 2>&1 || true)"
+  zenity --text-info --title="$APP_NAME health check" --width=900 --height=620 <<<"$health_text
+
+----
+Client doctor
+----
+$doctor_text"
+}
+
+connection_quality() {
+  local host port state auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms
+  local clipboard_enabled clipboard_send_enabled clipboard_force_poll clipboard_poll_ms latency_report quality_text peer_lines
+  host="$(read_config_value host)"
+  port="$(read_config_value port)"; [[ -n "$port" ]] || port="15101"
+  state="$(service_state)"
+  IFS=$'\t' read -r auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms < <(read_connection_behavior_values)
+  clipboard_enabled="$(read_config_value clipboard_enabled)"; [[ -n "$clipboard_enabled" ]] || clipboard_enabled="true"
+  clipboard_send_enabled="$(read_config_value clipboard_send_enabled)"; [[ -n "$clipboard_send_enabled" ]] || clipboard_send_enabled="true"
+  clipboard_force_poll="$(read_config_value clipboard_force_poll)"; [[ -n "$clipboard_force_poll" ]] || clipboard_force_poll="false"
+  clipboard_poll_ms="$(read_config_value clipboard_poll_ms)"; [[ -n "$clipboard_poll_ms" ]] || clipboard_poll_ms="1000"
+  latency_report="$(read_config_value "$LATENCY_REPORT_CONFIG_KEY")"; [[ -n "$latency_report" ]] || latency_report="false"
+
+  peer_lines="No peer state has been recorded yet."
+  if [[ -f "$STATE_PATH" ]]; then
+    peer_lines="$(awk -F'\t' '
+      /^peer=/ {
+        sub(/^peer=/, "", $1)
+        name=$2; approved=$3; connected=$4; last_seen=$5; last_connected=$6
+        if (name == "") name="unknown"
+        printf "- %s (%s): paired=%s connected=%s last_seen=%s last_connected=%s\n", name, $1, approved, connected, last_seen, last_connected
+      }
+    ' "$STATE_PATH")"
+    [[ -n "$peer_lines" ]] || peer_lines="No peer entries found in $STATE_PATH."
+  fi
+
+  quality_text="Service: $(service_state_label "$state") ($state)
+Configured host: ${host:-not configured}
+Input port: $port
+Clipboard port: 15100
+Reconnect mode: $( [[ "$auto_connect_enabled" == "true" ]] && printf 'Auto' || printf 'Manual' )
+Reconnect timing: initial=${reconnect_initial_backoff_ms}ms max=${reconnect_max_backoff_ms}ms idle=${reconnect_idle_retry_ms}ms
+Clipboard: enabled=$clipboard_enabled send_local=$clipboard_send_enabled force_poll=$clipboard_force_poll poll=${clipboard_poll_ms}ms
+Latency report logging: $latency_report
+
+Known peers:
+$peer_lines"
+  zenity --text-info --title="$APP_NAME connection quality" --width=840 --height=520 <<<"$quality_text"
+}
+
+diagnostics_bundle() {
+  if [[ ! -x "$DIAGNOSTICS_BUNDLE_SCRIPT" ]]; then
+    zenity --error --text="Diagnostics bundle script is not available:
+$DIAGNOSTICS_BUNDLE_SCRIPT"
+    return 1
+  fi
+  local output_dir result
+  output_dir="$(zenity --file-selection --directory --title="$APP_NAME diagnostics output folder" || true)"
+  [[ -n "$output_dir" ]] || return 1
+  result="$("$DIAGNOSTICS_BUNDLE_SCRIPT" --config "$CONFIG_PATH" --state "$STATE_PATH" --output "$output_dir" 2>&1 || true)"
+  zenity --text-info --title="$APP_NAME diagnostics bundle" --width=760 --height=420 <<<"$result"
 }
 
 show_peers() {
@@ -827,6 +932,53 @@ discover_and_save_peer() {
       start_session
     fi
   fi
+}
+
+export_windows_helper() {
+  require_client_binary || return 1
+  local output_dir position result
+  output_dir="$(zenity --file-selection --directory --title="$APP_NAME Windows helper output folder" || true)"
+  [[ -n "$output_dir" ]] || return 1
+  position="$(zenity --list --radiolist --title="$APP_NAME Windows helper" --width=560 --height=260 \
+    --text="Choose where the Linux desktop sits relative to the Windows host." \
+    --column="Use" --column="Position" \
+    TRUE "auto" \
+    FALSE "top-left" \
+    FALSE "top-right" \
+    FALSE "bottom-left" \
+    FALSE "bottom-right" || true)"
+  [[ -n "$position" ]] || return 1
+  result="$("$APP_BIN" export-windows-pair --config "$CONFIG_PATH" --output "$output_dir" --position "$position" --force 2>&1 || true)"
+  zenity --text-info --title="$APP_NAME Windows pairing helper" --width=820 --height=440 <<<"$result
+
+Next steps:
+1. Copy the exported .ps1 file to the Windows machine.
+2. Start PowerToys once so Mouse Without Borders creates its settings file.
+3. Run the helper in PowerShell.
+4. Return here and run Health Check."
+}
+
+guided_pairing() {
+  while true; do
+    local choice
+    choice="$(zenity --list --title="$APP_NAME guided pairing" --width=620 --height=360 \
+      --text="Use this flow to discover Windows, save Linux settings, export the Windows helper, then verify the setup." \
+      --column="Step" \
+      "1. Discover Windows peer and save settings" \
+      "2. Edit settings manually" \
+      "3. Export Windows helper" \
+      "4. Start service" \
+      "5. Run health check" \
+      "Back" || true)"
+    case "$choice" in
+      "1. Discover Windows peer and save settings") discover_and_save_peer ;;
+      "2. Edit settings manually") edit_settings ;;
+      "3. Export Windows helper") export_windows_helper ;;
+      "4. Start service") start_session ;;
+      "5. Run health check") health_check ;;
+      ""|"Back") return 0 ;;
+    esac
+  done
 }
 
 edit_settings() {
@@ -1045,7 +1197,23 @@ Terminal=false
 Categories=Utility;Network;
 Keywords=mouse;keyboard;sharing;input;controller;
 StartupNotify=false
-Actions=OpenSettings;OpenConnectionBehavior;ShowTrayHelp;ShowStatus;StartService;RestartService;StopService;
+Actions=GuidedPairing;HealthCheck;DiagnosticsBundle;ConnectionQuality;OpenSettings;OpenConnectionBehavior;ShowTrayHelp;ShowStatus;StartService;RestartService;StopService;
+
+[Desktop Action GuidedPairing]
+Name=Guided Pairing
+Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") guided-pairing
+
+[Desktop Action HealthCheck]
+Name=Health Check
+Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") health-check
+
+[Desktop Action DiagnosticsBundle]
+Name=Diagnostics Bundle
+Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") diagnostics-bundle
+
+[Desktop Action ConnectionQuality]
+Name=Connection Quality
+Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") connection-quality
 
 [Desktop Action OpenSettings]
 Name=Open Settings
@@ -1102,6 +1270,10 @@ main_menu() {
     local choice
     choice="$(zenity --list --title="$APP_NAME" --text="$(menu_summary_text)" --width=540 --height=400 \
       --column="Action" \
+      "Guided Pairing" \
+      "Health Check" \
+      "Diagnostics Bundle" \
+      "Connection Quality" \
       "Settings" \
       "Peers (Discovery & Known)" \
       "Connection Behavior" \
@@ -1114,6 +1286,10 @@ main_menu() {
       "Quit" || true)"
 
     case "$choice" in
+      "Guided Pairing") guided_pairing ;;
+      "Health Check") health_check ;;
+      "Diagnostics Bundle") diagnostics_bundle ;;
+      "Connection Quality") connection_quality ;;
       "Settings") edit_settings ;;
       "Peers (Discovery & Known)")
         local peer_choice
@@ -1138,6 +1314,10 @@ require_ui
 
 case "${1:-menu}" in
   ""|menu) main_menu ;;
+  guided-pairing|pairing|export-helper) guided_pairing ;;
+  health-check|doctor) health_check ;;
+  diagnostics-bundle|diagnostics) diagnostics_bundle ;;
+  connection-quality|quality) connection_quality ;;
   settings) edit_settings ;;
   connection|connection-behavior|reconnect) edit_connection_behavior ;;
   discover) discover_and_save_peer ;;
@@ -1150,7 +1330,7 @@ case "${1:-menu}" in
   tray) start_tray ;;
   install-desktop-entry|install-desktop-entries) install_desktop_entry ;;
   help|-h|--help)
-    printf 'Usage: %s [menu|settings|connection|discover|peers|tray-help|status|start|restart|stop|tray|install-desktop-entry]\n' "$(basename "${BASH_SOURCE[0]}")"
+    printf 'Usage: %s [menu|guided-pairing|health-check|diagnostics-bundle|connection-quality|settings|connection|discover|peers|tray-help|status|start|restart|stop|tray|install-desktop-entry]\n' "$(basename "${BASH_SOURCE[0]}")"
     ;;
   *)
     zenity --error --text="Unknown action: $1"
