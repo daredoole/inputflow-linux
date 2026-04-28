@@ -1006,9 +1006,7 @@ std::unique_ptr<ClipboardBackend> createBackend() {
             CommandSpec{{*wlPaste, "--no-newline", "--type", "text/html"}},
             CommandSpec{{*wlPaste, "--no-newline", "--type", "image/png"}},
             CommandSpec{{*wlCopy}},
-            CommandSpec{{*gdbus, "monitor", "--session", "--dest", "org.kde.klipper", "--object-path", "/klipper"}},
-            readCommand,
-            "clipboardChanged");
+            CommandSpec{{*wlPaste, "--no-newline", "--watch", *shell, "-c", "printf '\\0'"}} );
     }
 
     if (hasWayland && shell && wlPaste && wlCopy) {
@@ -1084,7 +1082,7 @@ bool ExternalCommandClipboardBackend::WritePayload(const ClipboardPayload& paylo
     if (payload.image) {
         CommandSpec cmd = m_writeCommand;
         if (m_name.find("wl-clipboard") != std::string::npos) {
-            cmd.argv.push_back("--type");
+            cmd.argv.push_back("-t");
             cmd.argv.push_back(payload.image->mimeType);
         } else if (m_name == "xclip") {
             cmd.argv.push_back("-t");

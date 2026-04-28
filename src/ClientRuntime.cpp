@@ -325,7 +325,11 @@ int ClientRuntime::Run() {
             }
 
             if (payload.image) {
-                std::cout << "[CLIPBOARD] Received image update (" << payload.image->bytes.size() << " bytes)" << std::endl;
+                std::cout << "[CLIPBOARD] Received image update (" << payload.image->bytes.size() << " bytes). Header: ";
+                for (std::size_t i = 0; i < std::min(payload.image->bytes.size(), static_cast<std::size_t>(8)); ++i) {
+                    printf("%02x ", payload.image->bytes[i]);
+                }
+                std::cout << std::endl;
             } else if (payload.plainText) {
                 std::cout << "[CLIPBOARD] Received text update (" << payload.plainText->size() << " bytes)" << std::endl;
             }

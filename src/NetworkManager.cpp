@@ -1182,6 +1182,13 @@ void NetworkManager::FinalizeInlineClipboardTransfer() {
     if (type == static_cast<uint8_t>(PackageType::ClipboardImage)) {
         auto imageBytes = ClipboardManager::DecodeImagePayload(payload);
         if (imageBytes.has_value()) {
+            // PowerToys often pads images with null bytes up to the next block size.
+            // Truncate to the actual image size if it's a known format like PNG.
+            // (89 50 4E 47 ... 49 45 4E 44 AE 42 60 82 for PNG)
+            // For now, let's just trim all trailing nulls.
+            while (!imageBytes->empty() && imageBytes->back() == 0) {
+                imageBytes->pop_back();
+            }
             DeliverClipboardPayload(ClipboardManager::MakeImagePayload("image/png", std::move(*imageBytes)));
         } else {
             std::cerr << "WARN: Failed to decode inline clipboard image payload." << std::endl;
@@ -1576,7 +1583,10 @@ void NetworkManager::RequestRemoteClipboard(uint32_t expectedRemoteMachineId) {
     if (kind == kClipboardSocketImageLabel) {
         auto imageBytes = ClipboardManager::DecodeImagePayload(payload);
         if (imageBytes.has_value()) {
-            std::cout << "[CLIPBOARD] Pulled image payload (" << payloadSize << " bytes)" << std::endl;
+            while (!imageBytes->empty() && imageBytes->back() == 0) {
+                imageBytes->pop_back();
+            }
+            std::cout << "[CLIPBOARD] Pulled image payload (" << payloadSize << " bytes, trimmed to " << imageBytes->size() << ")" << std::endl;
             DeliverClipboardPayload(ClipboardManager::MakeImagePayload("image/png", std::move(*imageBytes)));
         } else {
             std::cerr << "WARN: Failed to decode socket clipboard image payload." << std::endl;
@@ -2425,6 +2435,9 @@ void NetworkManager::HandleClipboardConnection(int fd) {
             } else if (kind == kClipboardSocketImageLabel) {
                 auto imageBytes = ClipboardManager::DecodeImagePayload(payload);
                 if (imageBytes.has_value()) {
+                    while (!imageBytes->empty() && imageBytes->back() == 0) {
+                        imageBytes->pop_back();
+                    }
                     DeliverClipboardPayload(ClipboardManager::MakeImagePayload("image/png", std::move(*imageBytes)));
                 }
             }
