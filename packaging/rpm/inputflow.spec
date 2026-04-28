@@ -14,6 +14,8 @@ BuildRequires:  openssl-devel
 BuildRequires:  pkgconf-pkg-config
 BuildRequires:  systemd-rpm-macros
 BuildRequires:  zlib-devel
+BuildRequires:  gtk3-devel
+BuildRequires:  libayatana-appindicator3-devel
 
 Requires:       systemd
 %{?systemd_requires}
@@ -31,12 +33,13 @@ retain the mwb-client naming for compatibility.
 %autosetup -n %{name}-%{version}
 
 %build
-%cmake
+%cmake -DMWB_BUILD_TRAY=ON
 %cmake_build
 
 %install
-%cmake_build --target mwb_client
+%cmake_build --target mwb_client mwb_tray
 install -Dpm0755 %{_vpath_builddir}/mwb_client %{buildroot}%{_bindir}/mwb_client
+install -Dpm0755 %{_vpath_builddir}/mwb_tray %{buildroot}%{_bindir}/mwb_tray
 install -Dpm0644 packaging/usr/lib/sysusers.d/mwb-client.conf %{buildroot}%{_sysusersdir}/mwb-client.conf
 install -Dpm0644 packaging/usr/lib/modules-load.d/mwb-client-uinput.conf %{buildroot}%{_modulesloaddir}/mwb-client-uinput.conf
 install -Dpm0644 packaging/usr/lib/udev/rules.d/70-mwb-client-uinput.rules %{buildroot}%{_udevrulesdir}/70-mwb-client-uinput.rules
@@ -62,6 +65,7 @@ udevadm trigger --name-match=uinput || :
 %license LICENSE
 %doc README.md packaging/README.md
 %{_bindir}/mwb_client
+%{_bindir}/mwb_tray
 %{_sysusersdir}/mwb-client.conf
 %{_modulesloaddir}/mwb-client-uinput.conf
 %{_udevrulesdir}/70-mwb-client-uinput.rules
