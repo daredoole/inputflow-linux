@@ -38,12 +38,12 @@ class ClipboardBackend {
 public:
     virtual ~ClipboardBackend() = default;
 
-    virtual std::optional<std::string> ReadText() = 0;
-    virtual bool WriteText(const std::string& text) = 0;
+    virtual std::optional<ClipboardPayload> ReadPayload() = 0;
+    virtual bool WritePayload(const ClipboardPayload& payload) = 0;
     virtual std::string Name() const = 0;
-    virtual bool WatchTextChanges(
+    virtual bool WatchPayloadChanges(
         const std::atomic<bool>& running,
-        const std::function<void(const std::string&)>& onTextChange) {
+        const std::function<void(const ClipboardPayload&)>& onPayloadChange) {
         return false;
     }
 };
@@ -55,20 +55,22 @@ public:
     static std::unique_ptr<ClipboardManager> CreateDefault();
 
     std::string BackendName();
-    std::optional<std::string> GetText();
-    bool SetText(const std::string& text);
-    bool WatchTextChanges(
+    std::optional<ClipboardPayload> GetPayload();
+    bool SetPayload(const ClipboardPayload& payload);
+    bool WatchPayloadChanges(
         const std::atomic<bool>& running,
-        const std::function<void(const std::string&)>& onTextChange);
+        const std::function<void(const ClipboardPayload&)>& onPayloadChange);
 
-    std::function<std::optional<std::string>()> MakeProvider();
-    std::function<void(const std::string&)> MakeConsumer();
+    std::function<std::optional<ClipboardPayload>()> MakeProvider();
+    std::function<void(const ClipboardPayload&)> MakeConsumer();
 
     static std::vector<uint8_t> EncodeTextPayload(const std::string& text);
+    static std::vector<uint8_t> EncodeImagePayload(const std::vector<uint8_t>& bytes);
     static ClipboardPayload MakeTextPayload(const std::string& text);
     static ClipboardPayload MakeImagePayload(std::string mimeType, std::vector<uint8_t> bytes);
     static std::optional<ClipboardPayload> DecodePayload(const std::vector<uint8_t>& payload);
     static std::optional<std::string> DecodeTextPayload(const std::vector<uint8_t>& payload);
+    static std::optional<std::vector<uint8_t>> DecodeImagePayload(const std::vector<uint8_t>& payload);
 
     static std::vector<uint8_t> EncodeSocketHeader(std::size_t payloadSize, const std::string& kind);
     static bool DecodeSocketHeader(

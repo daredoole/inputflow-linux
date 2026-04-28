@@ -33,32 +33,46 @@ class ExternalCommandClipboardBackend final : public ClipboardBackend {
 public:
     ExternalCommandClipboardBackend(
         std::string name,
-        CommandSpec readCommand,
+        CommandSpec listTypesCommand,
+        CommandSpec readTextCommand,
+        CommandSpec readHtmlCommand,
+        CommandSpec readImageCommand,
         CommandSpec writeCommand,
         CommandSpec watchCommand = {},
         CommandSpec watchReadCommand = {},
         std::string watchSignalNeedle = {})
         : m_name(std::move(name)),
-          m_readCommand(std::move(readCommand)),
+          m_listTypesCommand(std::move(listTypesCommand)),
+          m_readTextCommand(std::move(readTextCommand)),
+          m_readHtmlCommand(std::move(readHtmlCommand)),
+          m_readImageCommand(std::move(readImageCommand)),
           m_writeCommand(std::move(writeCommand)),
           m_watchCommand(std::move(watchCommand)),
           m_watchReadCommand(std::move(watchReadCommand)),
           m_watchSignalNeedle(std::move(watchSignalNeedle)) {}
 
-    std::optional<std::string> ReadText() override;
-    bool WriteText(const std::string& text) override;
+    std::optional<ClipboardPayload> ReadPayload() override;
+    bool WritePayload(const ClipboardPayload& payload) override;
     std::string Name() const override { return m_name; }
-    bool WatchTextChanges(
+    bool WatchPayloadChanges(
         const std::atomic<bool>& running,
-        const std::function<void(const std::string&)>& onTextChange) override;
+        const std::function<void(const ClipboardPayload&)>& onPayloadChange) override;
 
 private:
     std::string m_name;
-    CommandSpec m_readCommand;
+    CommandSpec m_listTypesCommand;
+    CommandSpec m_readTextCommand;
+    CommandSpec m_readHtmlCommand;
+    CommandSpec m_readImageCommand;
     CommandSpec m_writeCommand;
     CommandSpec m_watchCommand;
     CommandSpec m_watchReadCommand;
     std::string m_watchSignalNeedle;
+
+    std::mutex m_cacheMutex;
+    std::string m_lastTypes;
+    std::optional<std::string> m_lastPlainText;
+    std::optional<ClipboardPayload> m_cachedPayload;
 };
 
 bool writeAll(int fd, const uint8_t* data, std::size_t length) {
@@ -119,7 +133,7 @@ std::optional<std::string> findExecutable(const std::string& executable) {
     return std::nullopt;
 }
 
-std::optional<std::string> runReadCommand(const CommandSpec& command) {
+std::optional<std::vector<uint8_t>> runReadBytesCommand(const CommandSpec& command) {
     if (command.argv.empty()) {
         return std::nullopt;
     }
@@ -171,7 +185,15 @@ std::optional<std::string> runReadCommand(const CommandSpec& command) {
         return std::nullopt;
     }
 
-    return std::string(output.begin(), output.end());
+    return output;
+}
+
+std::optional<std::string> runReadCommand(const CommandSpec& command) {
+    auto bytes = runReadBytesCommand(command);
+    if (!bytes.has_value()) {
+        return std::nullopt;
+    }
+    return std::string(bytes->begin(), bytes->end());
 }
 
 void trimTrailingNewlines(std::string& text) {
@@ -227,10 +249,58 @@ bool runWriteCommand(const CommandSpec& command, const std::string& input) {
     return wroteOk && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
+bool runWriteBytesCommand(const CommandSpec& command, const std::vector<uint8_t>& input) {
+    if (command.argv.empty()) {
+        return false;
+    }
+
+    int stdinPipe[2];
+    if (pipe(stdinPipe) != 0) {
+        return false;
+    }
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(stdinPipe[0]);
+        close(stdinPipe[1]);
+        return false;
+    }
+
+    if (pid == 0) {
+        dup2(stdinPipe[0], STDIN_FILENO);
+        close(stdinPipe[0]);
+        close(stdinPipe[1]);
+
+        std::vector<char*> argv;
+        argv.reserve(command.argv.size() + 1);
+        for (const std::string& arg : command.argv) {
+            argv.push_back(const_cast<char*>(arg.c_str()));
+        }
+        argv.push_back(nullptr);
+
+        execv(argv[0], argv.data());
+        _exit(127);
+    }
+
+    close(stdinPipe[0]);
+    const bool wroteOk = writeAll(
+        stdinPipe[1],
+        input.data(),
+        input.size());
+    close(stdinPipe[1]);
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+
+    return wroteOk && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
 bool runWatchCommand(
     const CommandSpec& command,
     const std::atomic<bool>& running,
-    const std::function<void(const std::string&)>& onTextChange) {
+    const std::function<void(const ClipboardPayload&)>& onPayloadChange,
+    const std::function<std::optional<ClipboardPayload>()>& readPayload) {
     if (command.argv.empty()) {
         return false;
     }
@@ -303,9 +373,11 @@ bool runWatchCommand(
             buffered.append(chunk.data(), static_cast<std::size_t>(count));
             std::size_t separator = 0;
             while ((separator = buffered.find('\0')) != std::string::npos) {
-                const std::string text = buffered.substr(0, separator);
-                onTextChange(text);
                 buffered.erase(0, separator + 1);
+                auto payload = readPayload();
+                if (payload.has_value()) {
+                    onPayloadChange(*payload);
+                }
             }
         }
 
@@ -323,10 +395,6 @@ bool runWatchCommand(
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
     }
 
-    if (!buffered.empty()) {
-        onTextChange(buffered);
-    }
-
     return !exitedUnexpectedly;
 }
 
@@ -335,8 +403,10 @@ bool runSignalWatchCommand(
     const CommandSpec& readCommand,
     const std::string& signalNeedle,
     const std::atomic<bool>& running,
-    const std::function<void(const std::string&)>& onTextChange) {
-    if (watchCommand.argv.empty() || readCommand.argv.empty() || signalNeedle.empty()) {
+    const std::function<void(const ClipboardPayload&)>& onPayloadChange,
+    const std::function<std::optional<ClipboardPayload>()>& readPayload) {
+    (void)readCommand; // Not needed if we use readPayload instead
+    if (watchCommand.argv.empty() || signalNeedle.empty()) {
         return false;
     }
 
@@ -414,10 +484,9 @@ bool runSignalWatchCommand(
                     continue;
                 }
 
-                auto text = runReadCommand(readCommand);
-                if (text.has_value()) {
-                    trimTrailingNewlines(*text);
-                    onTextChange(*text);
+                auto payload = readPayload();
+                if (payload.has_value()) {
+                    onPayloadChange(*payload);
                 }
             }
         }
@@ -437,6 +506,7 @@ bool runSignalWatchCommand(
 
     return !exitedUnexpectedly;
 }
+
 
 std::u16string utf8ToUtf16(std::string_view text) {
     std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> converter;
@@ -936,32 +1006,42 @@ std::unique_ptr<ClipboardBackend> createBackend() {
         const CommandSpec readCommand{{*wlPaste, "--no-newline"}};
         return std::make_unique<ExternalCommandClipboardBackend>(
             "wl-clipboard-klipper",
+            CommandSpec{{*wlPaste, "--list-types"}},
             readCommand,
+            CommandSpec{{*wlPaste, "--no-newline", "--type", "text/html"}},
+            CommandSpec{{*wlPaste, "--no-newline", "--type", "image/png"}},
             CommandSpec{{*wlCopy}},
-            CommandSpec{{*gdbus, "monitor", "--session", "--dest", "org.kde.klipper", "--object-path", "/klipper"}},
-            readCommand,
-            "clipboardChanged");
+            CommandSpec{{*wlPaste, "--no-newline", "--watch", *shell, "-c", "printf '\\0'"}} );
     }
 
     if (hasWayland && shell && wlPaste && wlCopy) {
         return std::make_unique<ExternalCommandClipboardBackend>(
             "wl-clipboard",
+            CommandSpec{{*wlPaste, "--list-types"}},
             CommandSpec{{*wlPaste, "--no-newline"}},
+            CommandSpec{{*wlPaste, "--no-newline", "--type", "text/html"}},
+            CommandSpec{{*wlPaste, "--no-newline", "--type", "image/png"}},
             CommandSpec{{*wlCopy}},
-            CommandSpec{{*wlPaste, "--no-newline", "--watch", *shell, "-c", "cat; printf '\\0'"}} );
+            CommandSpec{{*wlPaste, "--no-newline", "--watch", *shell, "-c", "printf '\\0'"}} );
     }
 
     if (hasDisplay && xclip) {
         return std::make_unique<ExternalCommandClipboardBackend>(
             "xclip",
-            CommandSpec{{*xclip, "-selection", "clipboard", "-out"}},
-            CommandSpec{{*xclip, "-selection", "clipboard", "-in"}});
+            CommandSpec{{*xclip, "-selection", "clipboard", "-t", "TARGETS", "-o"}},
+            CommandSpec{{*xclip, "-selection", "clipboard", "-o"}},
+            CommandSpec{{*xclip, "-selection", "clipboard", "-t", "text/html", "-o"}},
+            CommandSpec{{*xclip, "-selection", "clipboard", "-t", "image/png", "-o"}},
+            CommandSpec{{*xclip, "-selection", "clipboard", "-i"}});
     }
 
     if (hasDisplay && xsel) {
         return std::make_unique<ExternalCommandClipboardBackend>(
             "xsel",
+            CommandSpec{}, // xsel doesn't easily list types
             CommandSpec{{*xsel, "--clipboard", "--output"}},
+            CommandSpec{},
+            CommandSpec{},
             CommandSpec{{*xsel, "--clipboard", "--input"}});
     }
 
@@ -970,35 +1050,111 @@ std::unique_ptr<ClipboardBackend> createBackend() {
 
 } // namespace
 
-std::optional<std::string> ExternalCommandClipboardBackend::ReadText() {
-    auto output = runReadCommand(m_readCommand);
-    if (!output.has_value()) {
+std::optional<ClipboardPayload> ExternalCommandClipboardBackend::ReadPayload() {
+    auto types = runReadCommand(m_listTypesCommand);
+    auto plainText = runReadCommand(m_readTextCommand);
+
+    {
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        if (m_cachedPayload && types == m_lastTypes && plainText == m_lastPlainText) {
+            return m_cachedPayload;
+        }
+        m_lastTypes = types.value_or("");
+        m_lastPlainText = plainText;
+    }
+
+    ClipboardPayload payload;
+    payload.plainText = plainText;
+
+    bool hasHtml = false;
+    bool hasImage = false;
+    if (types.has_value()) {
+        hasHtml = types->find("text/html") != std::string::npos;
+        hasImage = types->find("image/png") != std::string::npos || types->find("image/jpeg") != std::string::npos;
+    }
+
+    if (hasImage) {
+        auto bytes = runReadBytesCommand(m_readImageCommand);
+        if (bytes.has_value()) {
+            payload.image = ClipboardImagePayload{"image/png", std::move(*bytes), std::nullopt, std::nullopt};
+        }
+    }
+
+    if (hasHtml) {
+        auto html = runReadCommand(m_readHtmlCommand);
+        if (html.has_value()) {
+            payload.html = parseHtmlClipboardValue(*html);
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        m_cachedPayload = payload;
+    }
+
+    if (!payload.plainText && !payload.html && !payload.image) {
         return std::nullopt;
     }
+    return payload;
+}
 
-    while (!output->empty() && (output->back() == '\n' || output->back() == '\r')) {
-        output->pop_back();
+bool ExternalCommandClipboardBackend::WritePayload(const ClipboardPayload& payload) {
+    {
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        m_cachedPayload = payload;
+        m_lastTypes.clear(); // Force re-list on next poll
+        m_lastPlainText = payload.plainText;
     }
-    return output;
+
+    if (payload.image) {
+        CommandSpec cmd = m_writeCommand;
+        if (m_name.find("wl-clipboard") != std::string::npos) {
+            cmd.argv.push_back("-t");
+            cmd.argv.push_back(payload.image->mimeType);
+        } else if (m_name == "xclip") {
+            cmd.argv.push_back("-t");
+            cmd.argv.push_back(payload.image->mimeType);
+        }
+        return runWriteBytesCommand(cmd, payload.image->bytes);
+    }
+
+    if (payload.html && payload.html->fragment && !payload.html->fragment->empty()) {
+        if (m_name.find("wl-clipboard") != std::string::npos) {
+            CommandSpec htmlCmd = m_writeCommand;
+            htmlCmd.argv.push_back("--type");
+            htmlCmd.argv.push_back("text/html");
+            return runWriteCommand(htmlCmd, *payload.html->fragment);
+        } else if (m_name == "xclip") {
+            CommandSpec htmlCmd = m_writeCommand;
+            htmlCmd.argv.push_back("-t");
+            htmlCmd.argv.push_back("text/html");
+            return runWriteCommand(htmlCmd, *payload.html->fragment);
+        }
+    }
+
+    if (payload.plainText) {
+        return runWriteCommand(m_writeCommand, *payload.plainText);
+    }
+
+    return false;
 }
 
-bool ExternalCommandClipboardBackend::WriteText(const std::string& text) {
-    return runWriteCommand(m_writeCommand, text);
-}
-
-bool ExternalCommandClipboardBackend::WatchTextChanges(
+bool ExternalCommandClipboardBackend::WatchPayloadChanges(
     const std::atomic<bool>& running,
-    const std::function<void(const std::string&)>& onTextChange) {
+    const std::function<void(const ClipboardPayload&)>& onPayloadChange) {
+    const auto readFn = [this]() { return ReadPayload(); };
+
     if (!m_watchReadCommand.argv.empty() && !m_watchSignalNeedle.empty()) {
         return runSignalWatchCommand(
             m_watchCommand,
             m_watchReadCommand,
             m_watchSignalNeedle,
             running,
-            onTextChange);
+            onPayloadChange,
+            readFn);
     }
 
-    return runWatchCommand(m_watchCommand, running, onTextChange);
+    return runWatchCommand(m_watchCommand, running, onPayloadChange, readFn);
 }
 
 ClipboardManager::ClipboardManager(std::unique_ptr<ClipboardBackend> backend)
@@ -1017,38 +1173,38 @@ std::string ClipboardManager::BackendName() {
     return m_backend ? m_backend->Name() : "unavailable";
 }
 
-std::optional<std::string> ClipboardManager::GetText() {
+std::optional<ClipboardPayload> ClipboardManager::GetPayload() {
     std::lock_guard<std::mutex> lock(m_backendMutex);
     if (!m_backend) {
         return std::nullopt;
     }
-    return m_backend->ReadText();
+    return m_backend->ReadPayload();
 }
 
-bool ClipboardManager::SetText(const std::string& text) {
+bool ClipboardManager::SetPayload(const ClipboardPayload& payload) {
     std::lock_guard<std::mutex> lock(m_backendMutex);
-    return m_backend && m_backend->WriteText(text);
+    return m_backend && m_backend->WritePayload(payload);
 }
 
-bool ClipboardManager::WatchTextChanges(
+bool ClipboardManager::WatchPayloadChanges(
     const std::atomic<bool>& running,
-    const std::function<void(const std::string&)>& onTextChange) {
+    const std::function<void(const ClipboardPayload&)>& onPayloadChange) {
     ClipboardBackend* backend = nullptr;
     {
         std::lock_guard<std::mutex> lock(m_backendMutex);
         backend = m_backend.get();
     }
 
-    return backend && backend->WatchTextChanges(running, onTextChange);
+    return backend && backend->WatchPayloadChanges(running, onPayloadChange);
 }
 
-std::function<std::optional<std::string>()> ClipboardManager::MakeProvider() {
-    return [this]() { return GetText(); };
+std::function<std::optional<ClipboardPayload>()> ClipboardManager::MakeProvider() {
+    return [this]() { return GetPayload(); };
 }
 
-std::function<void(const std::string&)> ClipboardManager::MakeConsumer() {
-    return [this](const std::string& text) {
-        (void)SetText(text);
+std::function<void(const ClipboardPayload&)> ClipboardManager::MakeConsumer() {
+    return [this](const ClipboardPayload& payload) {
+        (void)SetPayload(payload);
     };
 }
 
@@ -1056,6 +1212,10 @@ std::vector<uint8_t> ClipboardManager::EncodeTextPayload(const std::string& text
     const std::u16string taggedText =
         utf8ToUtf16(std::string(kClipboardTextPrefix) + text + kClipboardTextSeparator);
     return deflateRaw(encodeUtf16Le(taggedText));
+}
+
+std::vector<uint8_t> ClipboardManager::EncodeImagePayload(const std::vector<uint8_t>& bytes) {
+    return bytes; // MWB images are often sent uncompressed or with their own compression over the socket
 }
 
 ClipboardPayload ClipboardManager::MakeTextPayload(const std::string& text) {
@@ -1088,6 +1248,11 @@ std::optional<std::string> ClipboardManager::DecodeTextPayload(const std::vector
     }
     return decoded->plainText;
 }
+
+std::optional<std::vector<uint8_t>> ClipboardManager::DecodeImagePayload(const std::vector<uint8_t>& payload) {
+    return payload; // Identity for now
+}
+
 
 std::vector<uint8_t> ClipboardManager::EncodeSocketHeader(std::size_t payloadSize, const std::string& kind) {
     const std::u16string header = utf8ToUtf16(std::to_string(payloadSize) + "*" + kind);

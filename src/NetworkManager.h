@@ -13,6 +13,7 @@
 
 #include "CryptoHelper.h"
 #include "Protocol.h"
+#include "ClipboardManager.h"
 
 namespace mwb {
 
@@ -23,14 +24,14 @@ public:
 
     void SetOnMouseCallback(std::function<void(const MouseData&)> cb);
     void SetOnKeyboardCallback(std::function<void(const KeyboardData&)> cb);
-    void SetOnClipboardCallback(std::function<void(const std::string&)> cb);
+    void SetOnClipboardCallback(std::function<void(const ClipboardPayload&)> cb);
     void SetOnSessionEstablished(std::function<void(const std::string&, int, const std::string&, uint32_t, uint32_t)> cb);
     void SetOnSessionDisconnected(std::function<void()> cb);
-    void SetClipboardProvider(std::function<std::optional<std::string>()> provider);
+    void SetClipboardProvider(std::function<std::optional<ClipboardPayload>()> provider);
     void SetLocalIdentity(uint32_t machineId, const std::string& machineName = {});
-    void PrimeLocalClipboardText(const std::string& text);
+    void PrimeLocalClipboardPayload(const ClipboardPayload& payload);
     void NotifyLocalClipboardChanged();
-    void NotifyLocalClipboardChanged(const std::string& text);
+    void NotifyLocalClipboardChanged(const ClipboardPayload& payload);
 
     void SetAutoConnectEnabled(bool enabled) { m_autoConnectEnabled = enabled; }
     void SetReconnectBackoff(int initialBackoffMs, int maxBackoffMs, int idleRetryMs);
@@ -81,16 +82,16 @@ private:
 
     std::function<void(const MouseData&)> m_onMouse;
     std::function<void(const KeyboardData&)> m_onKeyboard;
-    std::function<void(const std::string&)> m_onClipboard;
+    std::function<void(const ClipboardPayload&)> m_onClipboard;
     std::function<void(const std::string&, int, const std::string&, uint32_t, uint32_t)> m_onSessionEstablished;
     std::function<void()> m_onSessionDisconnected;
-    std::function<std::optional<std::string>()> m_clipboardProvider;
-    std::optional<std::string> m_pendingClipboardText;
+    std::function<std::optional<ClipboardPayload>()> m_clipboardProvider;
+    std::optional<ClipboardPayload> m_pendingClipboardPayloadStruct;
     std::vector<uint8_t> m_pendingClipboardPayload;
     std::vector<uint8_t> m_inlineClipboardBuffer;
     uint8_t m_inlineClipboardType{0};
     bool m_discardInlineClipboard{false};
-    std::optional<std::string> m_suppressedClipboardText;
+    std::optional<ClipboardPayload> m_suppressedClipboardPayload;
     std::string m_remoteName;
     std::unordered_map<uint32_t, int> m_activeSessionPeers;
     std::unordered_set<int> m_sessionSockets;
@@ -125,15 +126,17 @@ private:
 
     void HandleClipboardControlPacket(const MWBPacket& packet, uint32_t remoteMachineId);
     void FinalizeInlineClipboardTransfer();
-    void DeliverClipboardText(const std::string& text);
+    void DeliverClipboardPayload(const ClipboardPayload& payload);
     void RequestRemoteClipboard(uint32_t expectedRemoteMachineId);
     void PushClipboardToRemote(uint32_t expectedRemoteMachineId);
 
-    bool UpdatePendingClipboardText(const std::string& text);
+    bool UpdatePendingClipboardPayload(const ClipboardPayload& payload);
     std::optional<std::vector<uint8_t>> SnapshotClipboardPayload(bool refreshFromProvider);
+    std::optional<std::vector<uint8_t>> SnapshotClipboardImagePayload(bool refreshFromProvider);
     bool SendClipboardAnnouncement();
     bool SendClipboardAsk();
     bool SendInlineClipboardText(const std::vector<uint8_t>& payload);
+    bool SendInlineClipboardImage(const std::vector<uint8_t>& payload);
 };
 
 } // namespace mwb

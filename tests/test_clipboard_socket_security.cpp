@@ -295,7 +295,7 @@ void SendHeartbeatEx(MainSession& session, uint32_t remoteMachineId, uint16_t wi
 void PushClipboardText(int port, const std::string& key, uint32_t remoteMachineId, const std::string& text) {
     const int fd = ConnectLocal(port);
     mwb::CryptoHelper crypto(key);
-    const uint32_t magic = crypto.Get24BitHash();
+    const uint32_t magic = 0; // Clipboard socket uses zero magic (PowerToys compat)
 
     try {
         ReadAndDecrypt(fd, crypto, 16);
@@ -362,10 +362,12 @@ void TestClipboardSocketRequiresActiveSession() {
     std::condition_variable clipboardChanged;
     std::optional<std::string> clipboardText;
 
-    manager.SetOnClipboardCallback([&](const std::string& text) {
+    manager.SetOnClipboardCallback([&](const mwb::ClipboardPayload& payload) {
         {
             std::lock_guard<std::mutex> lock(clipboardMutex);
-            clipboardText = text;
+            if (payload.plainText) {
+                clipboardText = *payload.plainText;
+            }
         }
         clipboardChanged.notify_all();
     });
@@ -428,10 +430,12 @@ void TestClipboardTrustRevokedAfterControlDisconnect() {
     std::mutex clipboardMutex;
     std::condition_variable clipboardChanged;
     std::optional<std::string> clipboardText;
-    manager.SetOnClipboardCallback([&](const std::string& text) {
+    manager.SetOnClipboardCallback([&](const mwb::ClipboardPayload& payload) {
         {
             std::lock_guard<std::mutex> lock(clipboardMutex);
-            clipboardText = text;
+            if (payload.plainText) {
+                clipboardText = *payload.plainText;
+            }
         }
         clipboardChanged.notify_all();
     });

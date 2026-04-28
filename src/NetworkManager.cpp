@@ -98,6 +98,7 @@ const char* PackageTypeName(uint8_t type) {
         case PackageType::Heartbeat_ex: return "Heartbeat_ex";
         case PackageType::Heartbeat_ex_l2: return "Heartbeat_ex_l2";
         case PackageType::Heartbeat_ex_l3: return "Heartbeat_ex_l3";
+        case PackageType::Heartbeat_v2: return "Heartbeat_v2";
         default: return "Unknown";
     }
 }
@@ -471,21 +472,45 @@ std::optional<std::vector<uint8_t>> receivePacketOnSocket(
         return std::nullopt;
     }
     if (!packetHasValidMagicAndChecksum(plain, magic)) {
-        g_lastReceivePacketStatus = ReceivePacketStatus::Error;
-        if (DebugNetworkLoggingEnabled()) {
-            const uint8_t type = plain.empty() ? 0 : plain[0];
-            std::cerr << "[RECV] First packet block failed magic/checksum validation."
-                      << " type=" << static_cast<int>(type)
-                      << " magicBytes=0x" << std::hex
-                      << static_cast<int>(plain[2]) << static_cast<int>(plain[3])
-                      << " expected=0x" << ((magic >> 16) & 0xFF) << ((magic >> 24) & 0xFF)
-                      << std::dec << std::endl;
-            if (DebugPacketBytesLoggingEnabled()) {
-                std::cerr << "[RECV][INVALID] bytes=" << HexDump(plain.data(), plain.size())
-                          << std::endl;
+        const uint8_t type = plain.empty() ? 0 : plain[0];
+        // PowerToys MWB sometimes uses zero magic for clipboard socket handshake packets.
+        const bool isClipboardSocketHandshake = (type == static_cast<uint8_t>(PackageType::Clipboard) ||
+                                                  type == static_cast<uint8_t>(PackageType::ClipboardPush) ||
+                                                  type == static_cast<uint8_t>(PackageType::ClipboardAsk));
+        const bool hasZeroMagic = (plain[2] == 0 && plain[3] == 0);
+
+        if (isClipboardSocketHandshake && hasZeroMagic) {
+             // Validate checksum at least
+             uint8_t expectedChecksum = 0;
+             for (std::size_t index = 2; index < kSmallPacketSize; ++index) {
+                 expectedChecksum = static_cast<uint8_t>(expectedChecksum + plain[index]);
+             }
+             if (expectedChecksum == plain[1]) {
+                 if (DebugNetworkLoggingEnabled()) {
+                     std::cout << "[RECV] Accepting clipboard handshake packet with zero magic." << std::endl;
+                 }
+             } else {
+                 g_lastReceivePacketStatus = ReceivePacketStatus::Error;
+                 return std::nullopt;
+             }
+        } else {
+            g_lastReceivePacketStatus = ReceivePacketStatus::Error;
+            if (DebugNetworkLoggingEnabled()) {
+                std::cerr << "[RECV] First packet block failed magic/checksum validation."
+                          << " type=" << static_cast<int>(type)
+                          << " magicBytes=0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(plain[2])
+                          << std::setw(2) << std::setfill('0') << static_cast<int>(plain[3])
+                          << " expected=0x" << std::setw(2) << std::setfill('0') << ((magic >> 16) & 0xFF)
+                          << std::setw(2) << std::setfill('0') << ((magic >> 24) & 0xFF)
+                          << " checksum=0x" << std::setw(2) << std::setfill('0') << static_cast<int>(plain[1])
+                          << std::dec << std::endl;
+                if (DebugPacketBytesLoggingEnabled()) {
+                    std::cerr << "[RECV][INVALID] bytes=" << HexDump(plain.data(), plain.size())
+                              << std::endl;
+                }
             }
+            return std::nullopt;
         }
-        return std::nullopt;
     }
 
     if (!isBigPackage(plain[0])) {
@@ -603,11 +628,15 @@ bool exchangeClipboardHandshake(
     uint32_t magic,
     const std::string& machineName,
     uint32_t machineId,
+    uint32_t desId,
     const std::atomic<bool>& running,
     bool advertisePush,
     MWBPacket& remoteHeader,
     bool& remoteRequestsPush,
     std::string& remoteName) {
+    if (DebugNetworkLoggingEnabled()) {
+        std::cout << "[CLIPBOARD] Starting handshake, advertisePush=" << advertisePush << std::endl;
+    }
     std::vector<uint8_t> noise(16);
     if (!FillRandomBytes(noise.data(), noise.size())) {
         return false;
@@ -616,17 +645,20 @@ bool exchangeClipboardHandshake(
     std::vector<uint8_t> encryptedNoise;
     if (!crypto.EncryptStream(noise, encryptedNoise) ||
         !writeAll(fd, encryptedNoise.data(), encryptedNoise.size())) {
+        if (DebugNetworkLoggingEnabled()) std::cerr << "[CLIPBOARD] Handshake: Failed to write noise" << std::endl;
         return false;
     }
 
     uint8_t peerNoise[16];
     if (!readExact(fd, peerNoise, sizeof(peerNoise), running)) {
+        if (DebugNetworkLoggingEnabled()) std::cerr << "[CLIPBOARD] Handshake: Failed to read noise" << std::endl;
         return false;
     }
 
     std::vector<uint8_t> peerNoiseVec(peerNoise, peerNoise + sizeof(peerNoise));
     std::vector<uint8_t> ignoredNoise;
     if (!crypto.DecryptStream(peerNoiseVec, ignoredNoise)) {
+        if (DebugNetworkLoggingEnabled()) std::cerr << "[CLIPBOARD] Handshake: Failed to decrypt noise" << std::endl;
         return false;
     }
 
@@ -635,14 +667,22 @@ bool exchangeClipboardHandshake(
     header.type = static_cast<uint8_t>(advertisePush ? PackageType::ClipboardPush : PackageType::Clipboard);
     const uint32_t src = htole32(machineId);
     std::memcpy(&header.src, &src, sizeof(src));
+    const uint32_t des = htole32(desId != 0 ? desId : kBroadcastMachineId);
+    std::memcpy(&header.des, &des, sizeof(des));
     std::memset(&header.data[0], 0, sizeof(uint32_t)); // ClipboardPostAction::Other
 
     if (!sendPacketOnSocket(fd, crypto, magic, machineName, header, true, 0, 0, 0)) {
+        if (DebugNetworkLoggingEnabled()) std::cerr << "[CLIPBOARD] Handshake: Failed to send packet" << std::endl;
         return false;
     }
 
     auto packet = receivePacketOnSocket(fd, crypto, magic, running);
-    if (!packet || packet->size() < kBigPacketSize) {
+    if (!packet) {
+        if (DebugNetworkLoggingEnabled()) std::cerr << "[CLIPBOARD] Handshake: Failed to receive packet" << std::endl;
+        return false;
+    }
+    if (packet->size() < kBigPacketSize) {
+        if (DebugNetworkLoggingEnabled()) std::cerr << "[CLIPBOARD] Handshake: Received packet too small (" << packet->size() << ")" << std::endl;
         return false;
     }
 
@@ -650,12 +690,19 @@ bool exchangeClipboardHandshake(
     if (!remote ||
         (remote->type != static_cast<uint8_t>(PackageType::Clipboard) &&
          remote->type != static_cast<uint8_t>(PackageType::ClipboardPush))) {
+        if (DebugNetworkLoggingEnabled()) {
+             std::cerr << "[CLIPBOARD] Handshake: Received unexpected packet type "
+                       << (remote ? static_cast<int>(remote->type) : -1) << std::endl;
+        }
         return false;
     }
 
     remoteHeader = *remote;
     remoteRequestsPush = (remote->type == static_cast<uint8_t>(PackageType::ClipboardPush));
     remoteName = extractMachineName(*remote);
+    if (DebugNetworkLoggingEnabled()) {
+        std::cout << "[CLIPBOARD] Handshake success! remoteName=" << remoteName << std::endl;
+    }
     return true;
 }
 
@@ -689,8 +736,7 @@ bool receiveClipboardPayload(
         return false;
     }
 
-    const std::size_t maxPayloadSize =
-        (kind == kClipboardSocketTextLabel) ? kClipboardSocketMaxSize : 0;
+    const std::size_t maxPayloadSize = kClipboardSocketMaxSize;
     if (payloadSize > maxPayloadSize) {
         return false;
     }
@@ -889,10 +935,10 @@ void NetworkManager::ShutdownSessionSockets() {
 
 void NetworkManager::SetOnMouseCallback(std::function<void(const MouseData&)> cb) { m_onMouse = std::move(cb); }
 void NetworkManager::SetOnKeyboardCallback(std::function<void(const KeyboardData&)> cb) { m_onKeyboard = std::move(cb); }
-void NetworkManager::SetOnClipboardCallback(std::function<void(const std::string&)> cb) { m_onClipboard = std::move(cb); }
+void NetworkManager::SetOnClipboardCallback(std::function<void(const ClipboardPayload&)> cb) { m_onClipboard = std::move(cb); }
 void NetworkManager::SetOnSessionEstablished(std::function<void(const std::string&, int, const std::string&, uint32_t, uint32_t)> cb) { m_onSessionEstablished = std::move(cb); }
 void NetworkManager::SetOnSessionDisconnected(std::function<void()> cb) { m_onSessionDisconnected = std::move(cb); }
-void NetworkManager::SetClipboardProvider(std::function<std::optional<std::string>()> provider) { m_clipboardProvider = std::move(provider); }
+void NetworkManager::SetClipboardProvider(std::function<std::optional<ClipboardPayload>()> provider) { m_clipboardProvider = std::move(provider); }
 
 void NetworkManager::SetReconnectBackoff(int initialBackoffMs, int maxBackoffMs, int idleRetryMs) {
     const ReconnectPolicy policy = NormalizeReconnectPolicy(initialBackoffMs, maxBackoffMs, idleRetryMs);
@@ -910,14 +956,8 @@ void NetworkManager::SetLocalIdentity(uint32_t machineId, const std::string& mac
     }
 }
 
-void NetworkManager::PrimeLocalClipboardText(const std::string& text) {
-    if (text.empty()) {
-        return;
-    }
-
-    std::lock_guard<std::mutex> lock(m_clipboardMutex);
-    m_pendingClipboardText = text;
-    m_pendingClipboardPayload = ClipboardManager::EncodeTextPayload(text);
+void NetworkManager::PrimeLocalClipboardPayload(const ClipboardPayload& payload) {
+    UpdatePendingClipboardPayload(payload);
 }
 
 bool NetworkManager::Connect() {
@@ -1129,54 +1169,80 @@ void NetworkManager::FinalizeInlineClipboardTransfer() {
         return;
     }
 
-    if (type == static_cast<uint8_t>(PackageType::ClipboardText)) {
-        const auto decoded = ClipboardManager::DecodeTextPayload(payload);
-        if (decoded.has_value()) {
-            DeliverClipboardText(*decoded);
-        } else {
-            std::cerr << "WARN: Failed to decode inline clipboard text payload." << std::endl;
+    std::thread([this, payload = std::move(payload), type]() mutable {
+        if (type == static_cast<uint8_t>(PackageType::ClipboardText)) {
+            const auto decoded = ClipboardManager::DecodePayload(payload);
+            if (decoded.has_value()) {
+                DeliverClipboardPayload(*decoded);
+            } else {
+                std::cerr << "WARN: Failed to decode inline clipboard text payload." << std::endl;
+            }
+            return;
         }
-        return;
-    }
 
-    if (type == static_cast<uint8_t>(PackageType::ClipboardImage)) {
-        std::cerr << "WARN: Clipboard image payload received, but image sync is not implemented yet." << std::endl;
-    }
+        if (type == static_cast<uint8_t>(PackageType::ClipboardImage)) {
+            auto imageBytes = ClipboardManager::DecodeImagePayload(payload);
+            if (imageBytes.has_value()) {
+                // PowerToys often pads images with null bytes up to the next block size.
+                while (!imageBytes->empty() && imageBytes->back() == 0) {
+                    imageBytes->pop_back();
+                }
+                DeliverClipboardPayload(ClipboardManager::MakeImagePayload("image/png", std::move(*imageBytes)));
+            } else {
+                std::cerr << "WARN: Failed to decode inline clipboard image payload." << std::endl;
+            }
+        }
+    }).detach();
 }
 
-void NetworkManager::DeliverClipboardText(const std::string& text) {
+void NetworkManager::DeliverClipboardPayload(const ClipboardPayload& payload) {
     {
         std::lock_guard<std::mutex> lock(m_clipboardMutex);
-        m_suppressedClipboardText = text;
-        m_pendingClipboardText = text;
-        m_pendingClipboardPayload = ClipboardManager::EncodeTextPayload(text);
+        m_suppressedClipboardPayload = payload;
+        m_pendingClipboardPayloadStruct = payload;
+        if (payload.image) {
+            m_pendingClipboardPayload = ClipboardManager::EncodeImagePayload(payload.image->bytes);
+        } else if (payload.plainText) {
+            m_pendingClipboardPayload = ClipboardManager::EncodeTextPayload(*payload.plainText);
+        }
     }
 
     if (m_onClipboard) {
-        m_onClipboard(text);
+        m_onClipboard(payload);
     }
 }
 
-bool NetworkManager::UpdatePendingClipboardText(const std::string& text) {
+bool NetworkManager::UpdatePendingClipboardPayload(const ClipboardPayload& payload) {
     std::lock_guard<std::mutex> lock(m_clipboardMutex);
 
-    if (text.empty()) {
-        m_pendingClipboardText = text;
+    if (!payload.plainText && !payload.image) {
+        m_pendingClipboardPayloadStruct.reset();
         m_pendingClipboardPayload.clear();
         return false;
     }
 
-    if (m_suppressedClipboardText && *m_suppressedClipboardText == text) {
-        m_suppressedClipboardText.reset();
+    auto payloadsEqual = [](const ClipboardPayload& a, const ClipboardPayload& b) {
+        if (a.plainText != b.plainText) return false;
+        if (a.image.has_value() != b.image.has_value()) return false;
+        if (a.image && b.image && a.image->bytes != b.image->bytes) return false;
+        return true;
+    };
+
+    if (m_suppressedClipboardPayload && payloadsEqual(*m_suppressedClipboardPayload, payload)) {
+        m_suppressedClipboardPayload.reset();
         return false;
     }
 
-    if (m_pendingClipboardText && *m_pendingClipboardText == text) {
+    if (m_pendingClipboardPayloadStruct && payloadsEqual(*m_pendingClipboardPayloadStruct, payload)) {
         return false;
     }
 
-    m_pendingClipboardText = text;
-    m_pendingClipboardPayload = ClipboardManager::EncodeTextPayload(text);
+    m_pendingClipboardPayloadStruct = payload;
+    if (payload.image) {
+        m_pendingClipboardPayload = ClipboardManager::EncodeImagePayload(payload.image->bytes);
+    } else if (payload.plainText) {
+        m_pendingClipboardPayload = ClipboardManager::EncodeTextPayload(*payload.plainText);
+    }
     return true;
 }
 
@@ -1184,25 +1250,77 @@ std::optional<std::vector<uint8_t>> NetworkManager::SnapshotClipboardPayload(boo
     std::lock_guard<std::mutex> lock(m_clipboardMutex);
 
     if (refreshFromProvider && m_clipboardProvider) {
-        auto text = m_clipboardProvider();
-        if (text.has_value() && !text->empty()) {
-            if (m_suppressedClipboardText && *m_suppressedClipboardText == *text) {
-                m_suppressedClipboardText.reset();
+        auto payload = m_clipboardProvider();
+        if (payload.has_value()) {
+            // Re-using logic from UpdatePendingClipboardPayload essentially
+            // but we can't call it while holding the lock if it were to use the lock.
+            // Let's just do it manually here.
+
+            auto payloadsEqual = [](const ClipboardPayload& a, const ClipboardPayload& b) {
+                if (a.plainText != b.plainText) return false;
+                if (a.image.has_value() != b.image.has_value()) return false;
+                if (a.image && b.image && a.image->bytes != b.image->bytes) return false;
+                return true;
+            };
+
+            if (m_suppressedClipboardPayload && payloadsEqual(*m_suppressedClipboardPayload, *payload)) {
+                m_suppressedClipboardPayload.reset();
                 return std::nullopt;
             }
 
-            if (!m_pendingClipboardText || *m_pendingClipboardText != *text) {
-                m_pendingClipboardText = *text;
-                m_pendingClipboardPayload = ClipboardManager::EncodeTextPayload(*text);
+            if (!m_pendingClipboardPayloadStruct || !payloadsEqual(*m_pendingClipboardPayloadStruct, *payload)) {
+                m_pendingClipboardPayloadStruct = payload;
+                if (payload->image) {
+                    m_pendingClipboardPayload = ClipboardManager::EncodeImagePayload(payload->image->bytes);
+                } else if (payload->plainText) {
+                    m_pendingClipboardPayload = ClipboardManager::EncodeTextPayload(*payload->plainText);
+                }
             }
         }
     }
 
-    if (m_pendingClipboardPayload.empty()) {
+    if (m_pendingClipboardPayload.empty() || (m_pendingClipboardPayloadStruct && m_pendingClipboardPayloadStruct->image)) {
+        // Text/HTML snapshot doesn't return image payload
         return std::nullopt;
     }
     return m_pendingClipboardPayload;
 }
+
+std::optional<std::vector<uint8_t>> NetworkManager::SnapshotClipboardImagePayload(bool refreshFromProvider) {
+    std::lock_guard<std::mutex> lock(m_clipboardMutex);
+
+    if (refreshFromProvider && m_clipboardProvider) {
+        auto payload = m_clipboardProvider();
+        if (payload.has_value()) {
+            auto payloadsEqual = [](const ClipboardPayload& a, const ClipboardPayload& b) {
+                if (a.plainText != b.plainText) return false;
+                if (a.image.has_value() != b.image.has_value()) return false;
+                if (a.image && b.image && a.image->bytes != b.image->bytes) return false;
+                return true;
+            };
+
+            if (m_suppressedClipboardPayload && payloadsEqual(*m_suppressedClipboardPayload, *payload)) {
+                m_suppressedClipboardPayload.reset();
+                return std::nullopt;
+            }
+
+            if (!m_pendingClipboardPayloadStruct || !payloadsEqual(*m_pendingClipboardPayloadStruct, *payload)) {
+                m_pendingClipboardPayloadStruct = payload;
+                if (payload->image) {
+                    m_pendingClipboardPayload = ClipboardManager::EncodeImagePayload(payload->image->bytes);
+                } else if (payload->plainText) {
+                    m_pendingClipboardPayload = ClipboardManager::EncodeTextPayload(*payload->plainText);
+                }
+            }
+        }
+    }
+
+    if (m_pendingClipboardPayload.empty() || !m_pendingClipboardPayloadStruct || !m_pendingClipboardPayloadStruct->image) {
+        return std::nullopt;
+    }
+    return m_pendingClipboardPayload;
+}
+
 
 bool NetworkManager::SendClipboardAnnouncement() {
     MWBPacket packet;
@@ -1250,28 +1368,49 @@ bool NetworkManager::SendInlineClipboardText(const std::vector<uint8_t>& payload
     return SendPacket(endPacket, true);
 }
 
+bool NetworkManager::SendInlineClipboardImage(const std::vector<uint8_t>& payload) {
+    if (!m_handshakeDone || payload.empty()) {
+        return false;
+    }
+
+    for (std::size_t index = 0; index < payload.size(); index += kClipboardChunkSize) {
+        MWBPacket packet;
+        std::memset(&packet, 0, sizeof(packet));
+        packet.type = static_cast<uint8_t>(PackageType::ClipboardImage);
+
+        const uint32_t broadcast = htole32(kBroadcastMachineId);
+        std::memcpy(&packet.des, &broadcast, sizeof(broadcast));
+
+        const std::size_t chunkSize = std::min(kClipboardChunkSize, payload.size() - index);
+        std::memcpy(packet.data, payload.data() + index, chunkSize);
+        if (!SendPacket(packet, true)) {
+            return false;
+        }
+    }
+
+    MWBPacket endPacket;
+    std::memset(&endPacket, 0, sizeof(endPacket));
+    endPacket.type = static_cast<uint8_t>(PackageType::ClipboardDataEnd);
+    const uint32_t broadcast = htole32(kBroadcastMachineId);
+    std::memcpy(&endPacket.des, &broadcast, sizeof(broadcast));
+    return SendPacket(endPacket, true);
+}
+
 void NetworkManager::NotifyLocalClipboardChanged() {
     if (!m_handshakeDone) {
         return;
     }
 
-    const auto payload = SnapshotClipboardPayload(true);
-    if (!payload.has_value()) {
-        return;
-    }
-
-    if (payload->size() <= kClipboardInlineMaxSize && SendInlineClipboardText(*payload)) {
-        std::cout << "[CLIPBOARD] Sent inline text payload (" << payload->size() << " bytes compressed)" << std::endl;
-        return;
-    }
-
-    if (SendClipboardAnnouncement()) {
-        std::cout << "[CLIPBOARD] Advertised clipboard payload for socket transfer" << std::endl;
+    if (m_clipboardProvider) {
+        auto payload = m_clipboardProvider();
+        if (payload.has_value()) {
+            NotifyLocalClipboardChanged(*payload);
+        }
     }
 }
 
-void NetworkManager::NotifyLocalClipboardChanged(const std::string& text) {
-    if (!UpdatePendingClipboardText(text)) {
+void NetworkManager::NotifyLocalClipboardChanged(const ClipboardPayload& payload) {
+    if (!UpdatePendingClipboardPayload(payload)) {
         return;
     }
 
@@ -1279,14 +1418,18 @@ void NetworkManager::NotifyLocalClipboardChanged(const std::string& text) {
         return;
     }
 
-    const auto payload = SnapshotClipboardPayload(false);
-    if (!payload.has_value()) {
-        return;
-    }
-
-    if (payload->size() <= kClipboardInlineMaxSize && SendInlineClipboardText(*payload)) {
-        std::cout << "[CLIPBOARD] Sent inline text payload (" << payload->size() << " bytes compressed)" << std::endl;
-        return;
+    if (payload.image) {
+        const auto encoded = SnapshotClipboardImagePayload(false);
+        if (encoded.has_value() && encoded->size() <= kClipboardInlineMaxSize && SendInlineClipboardImage(*encoded)) {
+             std::cout << "[CLIPBOARD] Sent inline image payload (" << encoded->size() << " bytes)" << std::endl;
+             return;
+        }
+    } else {
+        const auto encoded = SnapshotClipboardPayload(false);
+        if (encoded.has_value() && encoded->size() <= kClipboardInlineMaxSize && SendInlineClipboardText(*encoded)) {
+            std::cout << "[CLIPBOARD] Sent inline text payload (" << encoded->size() << " bytes compressed)" << std::endl;
+            return;
+        }
     }
 
     if (SendClipboardAnnouncement()) {
@@ -1393,12 +1536,12 @@ void NetworkManager::RequestRemoteClipboard(uint32_t expectedRemoteMachineId) {
     }
 
     CryptoHelper crypto(m_key);
-    const uint32_t magic = crypto.Get24BitHash();
+    const uint32_t magic = 0; // PowerToys often uses zero magic for secondary clipboard socket
     bool remotePush = false;
     std::string remoteName;
     MWBPacket remoteHeader;
     std::memset(&remoteHeader, 0, sizeof(remoteHeader));
-    if (!exchangeClipboardHandshake(fd, crypto, magic, m_myName, m_myId, m_running, false, remoteHeader, remotePush, remoteName)) {
+    if (!exchangeClipboardHandshake(fd, crypto, magic, m_myName, m_myId, expectedRemoteMachineId, m_running, false, remoteHeader, remotePush, remoteName)) {
         std::cerr << "WARN: Clipboard pull handshake failed." << std::endl;
         closeSocket(fd);
         return;
@@ -1426,10 +1569,10 @@ void NetworkManager::RequestRemoteClipboard(uint32_t expectedRemoteMachineId) {
     closeSocket(fd);
 
     if (kind == kClipboardSocketTextLabel) {
-        const auto text = ClipboardManager::DecodeTextPayload(payload);
-        if (text.has_value()) {
+        const auto decoded = ClipboardManager::DecodePayload(payload);
+        if (decoded.has_value()) {
             std::cout << "[CLIPBOARD] Pulled text payload (" << payloadSize << " bytes compressed)" << std::endl;
-            DeliverClipboardText(*text);
+            DeliverClipboardPayload(*decoded);
         } else {
             std::cerr << "WARN: Failed to decode socket clipboard text payload." << std::endl;
         }
@@ -1437,7 +1580,16 @@ void NetworkManager::RequestRemoteClipboard(uint32_t expectedRemoteMachineId) {
     }
 
     if (kind == kClipboardSocketImageLabel) {
-        std::cerr << "WARN: Clipboard image received over socket, but image sync is not implemented yet." << std::endl;
+        auto imageBytes = ClipboardManager::DecodeImagePayload(payload);
+        if (imageBytes.has_value()) {
+            while (!imageBytes->empty() && imageBytes->back() == 0) {
+                imageBytes->pop_back();
+            }
+            std::cout << "[CLIPBOARD] Pulled image payload (" << payloadSize << " bytes, trimmed to " << imageBytes->size() << ")" << std::endl;
+            DeliverClipboardPayload(ClipboardManager::MakeImagePayload("image/png", std::move(*imageBytes)));
+        } else {
+            std::cerr << "WARN: Failed to decode socket clipboard image payload." << std::endl;
+        }
         return;
     }
 
@@ -1450,7 +1602,20 @@ void NetworkManager::PushClipboardToRemote(uint32_t expectedRemoteMachineId) {
         return;
     }
 
-    const auto payload = SnapshotClipboardPayload(true);
+    std::optional<std::vector<uint8_t>> payload;
+    std::string kind;
+
+    {
+        std::lock_guard<std::mutex> lock(m_clipboardMutex);
+        if (m_pendingClipboardPayloadStruct && m_pendingClipboardPayloadStruct->image) {
+            payload = SnapshotClipboardImagePayload(true);
+            kind = kClipboardSocketImageLabel;
+        } else {
+            payload = SnapshotClipboardPayload(true);
+            kind = kClipboardSocketTextLabel;
+        }
+    }
+
     if (!payload.has_value()) {
         return;
     }
@@ -1463,12 +1628,12 @@ void NetworkManager::PushClipboardToRemote(uint32_t expectedRemoteMachineId) {
     }
 
     CryptoHelper crypto(m_key);
-    const uint32_t magic = crypto.Get24BitHash();
+    const uint32_t magic = 0; // PowerToys often uses zero magic for secondary clipboard socket
     bool remotePush = false;
     std::string remoteName;
     MWBPacket remoteHeader;
     std::memset(&remoteHeader, 0, sizeof(remoteHeader));
-    if (!exchangeClipboardHandshake(fd, crypto, magic, m_myName, m_myId, m_running, true, remoteHeader, remotePush, remoteName)) {
+    if (!exchangeClipboardHandshake(fd, crypto, magic, m_myName, m_myId, expectedRemoteMachineId, m_running, true, remoteHeader, remotePush, remoteName)) {
         std::cerr << "WARN: Clipboard push handshake failed." << std::endl;
         closeSocket(fd);
         return;
@@ -1484,8 +1649,8 @@ void NetworkManager::PushClipboardToRemote(uint32_t expectedRemoteMachineId) {
         return;
     }
 
-    if (sendClipboardPayload(fd, crypto, *payload, kClipboardSocketTextLabel)) {
-        std::cout << "[CLIPBOARD] Pushed text payload over clipboard socket (" << payload->size() << " bytes compressed)" << std::endl;
+    if (sendClipboardPayload(fd, crypto, *payload, kind)) {
+        std::cout << "[CLIPBOARD] Pushed " << kind << " payload over clipboard socket (" << payload->size() << " bytes)" << std::endl;
     } else {
         std::cerr << "WARN: Failed to send clipboard payload over clipboard socket." << std::endl;
     }
@@ -1536,7 +1701,7 @@ void NetworkManager::RunLoop() {
                 }
                 continue;
             }
-            reconnectState = ResetReconnectAfterSuccess(reconnectPolicy);
+            // Do NOT reset reconnectState here; wait for handshake success
         }
 
         uint8_t serverNoise[16];
@@ -1545,6 +1710,14 @@ void NetworkManager::RunLoop() {
                 fprintf(stderr, "[OUTBOUND] Failed to receive server noise\n");
             }
             closeSocket(m_socket);
+
+            const int scheduledBackoffMs = ScheduledReconnectDelayMs(reconnectPolicy, reconnectState);
+            const int delayMs = AddReconnectJitter(scheduledBackoffMs);
+            std::cout << "[RECONNECT] Protocol error (noise). Retrying in " << delayMs << " ms." << std::endl;
+            reconnectState = AdvanceReconnectAfterFailure(reconnectPolicy, reconnectState);
+            if (!SleepWithStop(m_running, delayMs)) {
+                break;
+            }
             continue;
         }
 
@@ -1553,6 +1726,14 @@ void NetworkManager::RunLoop() {
         if (!m_crypto.DecryptStream(encryptedNoise, ignoredNoise)) {
             fprintf(stderr, "[OUTBOUND] Failed to decrypt server noise\n");
             closeSocket(m_socket);
+
+            const int scheduledBackoffMs = ScheduledReconnectDelayMs(reconnectPolicy, reconnectState);
+            const int delayMs = AddReconnectJitter(scheduledBackoffMs);
+            std::cout << "[RECONNECT] Crypto error (noise). Retrying in " << delayMs << " ms." << std::endl;
+            reconnectState = AdvanceReconnectAfterFailure(reconnectPolicy, reconnectState);
+            if (!SleepWithStop(m_running, delayMs)) {
+                break;
+            }
             continue;
         }
 
@@ -1655,6 +1836,14 @@ void NetworkManager::RunLoop() {
         if (!m_handshakeDone) {
             fprintf(stderr, "[OUTBOUND] Handshake failed, will reconnect\n");
             closeSocket(m_socket);
+
+            const int scheduledBackoffMs = ScheduledReconnectDelayMs(reconnectPolicy, reconnectState);
+            const int delayMs = AddReconnectJitter(scheduledBackoffMs);
+            std::cout << "[RECONNECT] Handshake failed. Retrying in " << delayMs << " ms." << std::endl;
+            reconnectState = AdvanceReconnectAfterFailure(reconnectPolicy, reconnectState);
+            if (!SleepWithStop(m_running, delayMs)) {
+                break;
+            }
             continue;
         }
 
@@ -2236,12 +2425,12 @@ void NetworkManager::HandleClipboardConnection(int fd) {
     TrackSessionSocket(fd);
 
     CryptoHelper crypto(m_key);
-    const uint32_t magic = crypto.Get24BitHash();
+    const uint32_t magic = 0; // PowerToys often uses zero magic for secondary clipboard socket
     bool remoteRequestsPush = false;
     std::string remoteName;
     MWBPacket remoteHeader;
     std::memset(&remoteHeader, 0, sizeof(remoteHeader));
-    if (!exchangeClipboardHandshake(fd, crypto, magic, m_myName, m_myId, m_running, true, remoteHeader, remoteRequestsPush, remoteName)) {
+    if (!exchangeClipboardHandshake(fd, crypto, magic, m_myName, m_myId, 0, m_running, true, remoteHeader, remoteRequestsPush, remoteName)) {
         closeSocket(fd);
         return;
     }
@@ -2262,16 +2451,36 @@ void NetworkManager::HandleClipboardConnection(int fd) {
         std::vector<uint8_t> payload;
         if (receiveClipboardPayload(fd, crypto, m_running, payloadSize, kind, payload)) {
             if (kind == kClipboardSocketTextLabel) {
-                const auto text = ClipboardManager::DecodeTextPayload(payload);
-                if (text.has_value()) {
-                    DeliverClipboardText(*text);
+                const auto decoded = ClipboardManager::DecodePayload(payload);
+                if (decoded.has_value()) {
+                    DeliverClipboardPayload(*decoded);
                 }
             } else if (kind == kClipboardSocketImageLabel) {
-                std::cerr << "WARN: Clipboard image received over socket, but image sync is not implemented yet." << std::endl;
+                auto imageBytes = ClipboardManager::DecodeImagePayload(payload);
+                if (imageBytes.has_value()) {
+                    while (!imageBytes->empty() && imageBytes->back() == 0) {
+                        imageBytes->pop_back();
+                    }
+                    DeliverClipboardPayload(ClipboardManager::MakeImagePayload("image/png", std::move(*imageBytes)));
+                }
             }
         }
-    } else if (const auto payload = SnapshotClipboardPayload(false); payload.has_value()) {
-        sendClipboardPayload(fd, crypto, *payload, kClipboardSocketTextLabel);
+    } else {
+        std::optional<std::vector<uint8_t>> payload;
+        std::string kind;
+        {
+             std::lock_guard<std::mutex> lock(m_clipboardMutex);
+             if (m_pendingClipboardPayloadStruct && m_pendingClipboardPayloadStruct->image) {
+                 payload = SnapshotClipboardImagePayload(false);
+                 kind = kClipboardSocketImageLabel;
+             } else {
+                 payload = SnapshotClipboardPayload(false);
+                 kind = kClipboardSocketTextLabel;
+             }
+        }
+        if (payload.has_value()) {
+            sendClipboardPayload(fd, crypto, *payload, kind);
+        }
     }
 
     closeSocket(fd);
