@@ -17,6 +17,11 @@ packagers can copy files directly or map them to distro macros.
 - `usr/lib/systemd/user/mwb-client.service`
   Runs `mwb_client` from a user systemd manager with
   `%h/.config/mwb-client/config.ini`.
+- `usr/share/applications/inputflow.desktop`
+  Launches the packaged desktop controller from `/usr/libexec/inputflow`.
+- `../scripts/inputflow-diagnostics-bundle.sh`
+  Canonical diagnostics bundle helper; the RPM installs it under
+  `/usr/libexec/inputflow/scripts/`.
 - `rpm/inputflow.spec`
   Fedora/RPM packaging skeleton for the InputFlow package. It intentionally keeps
   the installed command and user service named `mwb_client` and
@@ -30,6 +35,10 @@ Install the files to the standard macro destinations:
 - `%{_modulesloaddir}/mwb-client-uinput.conf`
 - `%{_udevrulesdir}/70-mwb-client-uinput.rules`
 - `%{_userunitdir}/mwb-client.service`
+- `%{_libexecdir}/inputflow/mwb-desktop-ui.sh`
+- `%{_libexecdir}/inputflow/scripts/inputflow-diagnostics-bundle.sh`
+- `%{_datadir}/applications/inputflow.desktop`
+- `%{_datadir}/icons/hicolor/scalable/apps/inputflow.svg`
 
 Create the group with systemd-sysusers from package scriptlets/macros. Reload udev
 rules after installing the rule, and load or trigger `uinput` if the package wants
@@ -79,6 +88,10 @@ systemctl --user enable --now mwb-client.service
 The packaged user unit is intentionally configuration-gated with
 `ConditionPathExists=%h/.config/mwb-client/config.ini`; an enabled service will be
 skipped until the user creates that file.
+
+The desktop entry is a launcher only; it does not enable or start services during
+package installation. The diagnostics bundle script redacts likely secret, host,
+and address values before archiving config or state files.
 
 Firewall rules are normally unnecessary for the Linux client when it only initiates
 outbound connections to a Windows host. SELinux policy should be kept distro-owned;
