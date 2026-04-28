@@ -41,6 +41,7 @@ struct TrayContext {
     GtkWidget* restartItem{nullptr};
     std::string controllerPath;
     std::string iconThemePath;
+    std::string lastState;
 };
 
 std::optional<std::string> RunCommandCapture(const std::string& command) {
@@ -370,6 +371,11 @@ AppIndicatorStatus IndicatorStatus(const std::string& state) {
 }
 
 void UpdateIndicatorVisuals(TrayContext* context, const std::string& state) {
+    if (context->lastState == state) {
+        return;
+    }
+    context->lastState = state;
+
     const std::string displayState = DescribeState(state);
     const std::string statusText = "Service: " + displayState;
     const std::string indicatorDescription = IndicatorDescription(displayState);
@@ -384,7 +390,6 @@ void UpdateIndicatorVisuals(TrayContext* context, const std::string& state) {
     gtk_widget_set_sensitive(context->restartItem, active);
 
     const bool controllerAvailable = !context->controllerPath.empty();
-    gtk_widget_set_sensitive(context->openControllerItem, controllerAvailable);
     gtk_widget_set_sensitive(context->editSettingsItem, controllerAvailable);
     gtk_widget_set_sensitive(context->editConnectionItem, controllerAvailable);
     gtk_widget_set_sensitive(context->discoverPeersItem, controllerAvailable);
@@ -394,12 +399,12 @@ void UpdateIndicatorVisuals(TrayContext* context, const std::string& state) {
     gtk_widget_set_sensitive(context->showStatusItem, controllerAvailable);
 
     const std::string shortLabel = IndicatorLabel(state);
+    const std::string accessibleLabel = IndicatorAccessibleLabel(state);
 
     app_indicator_set_status(context->indicator, IndicatorStatus(state));
     app_indicator_set_title(context->indicator, kAppName);
-    app_indicator_set_label(context->indicator, shortLabel.c_str(), IndicatorAccessibleLabel(state).c_str());
+    app_indicator_set_label(context->indicator, shortLabel.c_str(), accessibleLabel.c_str());
     if (!context->iconThemePath.empty()) {
-        app_indicator_set_icon_theme_path(context->indicator, context->iconThemePath.c_str());
         app_indicator_set_attention_icon_full(context->indicator, "inputflow-tray-attention", "InputFlow needs attention");
         app_indicator_set_icon_full(context->indicator, BundledIndicatorIconName(state), indicatorDescription.c_str());
     } else {
@@ -544,20 +549,24 @@ int main(int argc, char** argv) {
     context.statusItem = gtk_menu_item_new_with_label("Service: Checking...");
     gtk_widget_set_sensitive(context.statusItem, FALSE);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), context.statusItem);
-
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
-    context.openControllerItem = AddMenuItem(menu, "Open Controller", G_CALLBACK(OnOpenController), &context);
-    context.editSettingsItem = AddMenuItem(menu, "Edit Settings", G_CALLBACK(OnEditSettings), &context);
+
+    context.editSettingsItem = AddMenuItem(menu, "Settings", G_CALLBACK(OnEditSettings), &context);
     context.editConnectionItem = AddMenuItem(menu, "Connection Behavior", G_CALLBACK(OnEditConnectionBehavior), &context);
     context.discoverPeersItem = AddMenuItem(menu, "Discover Peers", G_CALLBACK(OnDiscoverPeers), &context);
-    context.showPeersItem = AddMenuItem(menu, "Show Known Peers", G_CALLBACK(OnShowPeers), &context);
-    context.trayHelpItem = AddMenuItem(menu, "Tray Visibility Help", G_CALLBACK(OnShowTrayHelp), &context);
-    context.installDesktopEntriesItem = AddMenuItem(menu, "Install Desktop Entries", G_CALLBACK(OnInstallDesktopEntries), &context);
-    context.showStatusItem = AddMenuItem(menu, "Show Service Details", G_CALLBACK(OnShowStatus), &context);
+    context.showPeersItem = AddMenuItem(menu, "Known Peers", G_CALLBACK(OnShowPeers), &context);
+
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
     context.startItem = AddMenuItem(menu, "Start Service", G_CALLBACK(OnStartService), &context);
     context.stopItem = AddMenuItem(menu, "Stop Service", G_CALLBACK(OnStopService), &context);
     context.restartItem = AddMenuItem(menu, "Restart Service", G_CALLBACK(OnRestartService), &context);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+
+    context.showStatusItem = AddMenuItem(menu, "Show Service Details", G_CALLBACK(OnShowStatus), &context);
+    context.installDesktopEntriesItem = AddMenuItem(menu, "Install Desktop Entries", G_CALLBACK(OnInstallDesktopEntries), &context);
+    context.trayHelpItem = AddMenuItem(menu, "Tray Visibility Help", G_CALLBACK(OnShowTrayHelp), &context);
+
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
     AddMenuItem(menu, "Quit", G_CALLBACK(OnQuit), &context);
     gtk_widget_show_all(menu);
@@ -575,12 +584,11 @@ int main(int argc, char** argv) {
     app_indicator_set_title(context.indicator, kAppName);
     app_indicator_set_label(context.indicator, "IF", "IF");
     app_indicator_set_menu(context.indicator, GTK_MENU(menu));
-    app_indicator_set_secondary_activate_target(context.indicator, context.openControllerItem);
+    app_indicator_set_secondary_activate_target(context.indicator, context.editSettingsItem);
 
     UpdateIndicatorVisuals(&context, QueryServiceState());
     app_indicator_set_status(context.indicator, APP_INDICATOR_STATUS_ACTIVE);
-    MaybeShowStartupHint(context);
-    g_timeout_add_seconds(2, RefreshStatus, &context);
+    g_timeout_add_seconds(30, RefreshStatus, &context);
 
     gtk_main();
     if (instanceLockFd >= 0) {

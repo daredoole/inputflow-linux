@@ -307,24 +307,34 @@ int ClientRuntime::Run() {
     if (m_clipboard) {
         m_clipboardBackendName = m_clipboard->BackendName();
         std::cout << "[INFO] Clipboard backend: " << m_clipboardBackendName << std::endl;
-        m_lastClipboardText = m_clipboard->GetText();
-        if (m_lastClipboardText.has_value() && !m_lastClipboardText->empty()) {
-            m_network->PrimeLocalClipboardText(*m_lastClipboardText);
+        m_lastClipboardPayload = m_clipboard->GetPayload();
+        if (m_lastClipboardPayload.has_value()) {
+            m_network->PrimeLocalClipboardPayload(*m_lastClipboardPayload);
         }
         m_network->SetClipboardProvider(m_clipboard->MakeProvider());
-        m_network->SetOnClipboardCallback([this](const std::string& text) {
-            if (!m_clipboard->SetText(text)) {
-                std::cerr << "WARN: Failed to write incoming clipboard text through backend '"
-                          << m_clipboard->BackendName() << "'." << std::endl;
-                return;
-            }
+        m_network->SetOnClipboardCallback([this](const ClipboardPayload& payload) {
+            std::thread([this, payload]() {
+                if (!m_clipboard->SetPayload(payload)) {
+                    std::cerr << "WARN: Failed to write incoming clipboard payload through backend '"
+                              << m_clipboard->BackendName() << "'." << std::endl;
+                    return;
+                }
 
-            {
-                std::lock_guard<std::mutex> lock(m_clipboardStateMutex);
-                m_lastClipboardText = text;
-            }
+                {
+                    std::lock_guard<std::mutex> lock(m_clipboardStateMutex);
+                    m_lastClipboardPayload = payload;
+                }
 
-            std::cout << "[CLIPBOARD] Received text update (" << text.size() << " bytes)" << std::endl;
+                if (payload.image) {
+                    std::cout << "[CLIPBOARD] Received image update (" << payload.image->bytes.size() << " bytes). Header: ";
+                    for (std::size_t i = 0; i < std::min(payload.image->bytes.size(), static_cast<std::size_t>(8)); ++i) {
+                        printf("%02x ", payload.image->bytes[i]);
+                    }
+                    std::cout << std::endl;
+                } else if (payload.plainText) {
+                    std::cout << "[CLIPBOARD] Received text update (" << payload.plainText->size() << " bytes)" << std::endl;
+                }
+            }).detach();
         });
     } else if (!m_options.clipboardEnabled) {
         std::cerr << "WARN: Clipboard sync disabled by configuration." << std::endl;
@@ -385,23 +395,30 @@ void ClientRuntime::StartClipboardWatcher() {
 
     m_clipboardWatcherRunning = true;
     m_clipboardWatcher = std::thread([this]() {
-        const auto handleClipboardText = [this](const std::string& text) {
+        const auto handleClipboardPayload = [this](const ClipboardPayload& payload) {
             bool changed = false;
             {
                 std::lock_guard<std::mutex> lock(m_clipboardStateMutex);
-                if (!m_lastClipboardText || *m_lastClipboardText != text) {
-                    m_lastClipboardText = text;
+                if (!m_lastClipboardPayload ||
+                    m_lastClipboardPayload->plainText != payload.plainText ||
+                    (m_lastClipboardPayload->image.has_value() != payload.image.has_value()) ||
+                    (payload.image && m_lastClipboardPayload->image && payload.image->bytes != m_lastClipboardPayload->image->bytes)) {
+                    m_lastClipboardPayload = payload;
                     changed = true;
                 }
             }
 
             if (changed && m_network) {
-                std::cout << "[CLIPBOARD] Local text changed (" << text.size() << " bytes)" << std::endl;
-                m_network->NotifyLocalClipboardChanged(text);
+                if (payload.image) {
+                    std::cout << "[CLIPBOARD] Local image changed (" << payload.image->bytes.size() << " bytes)" << std::endl;
+                } else if (payload.plainText) {
+                    std::cout << "[CLIPBOARD] Local text changed (" << payload.plainText->size() << " bytes)" << std::endl;
+                }
+                m_network->NotifyLocalClipboardChanged(payload);
             }
         };
 
-        if (m_clipboard->WatchTextChanges(m_clipboardWatcherRunning, handleClipboardText)) {
+        if (m_clipboard->WatchPayloadChanges(m_clipboardWatcherRunning, handleClipboardPayload)) {
             return;
         }
 
@@ -415,9 +432,9 @@ void ClientRuntime::StartClipboardWatcher() {
         }
 
         while (m_clipboardWatcherRunning) {
-            const auto currentText = m_clipboard->GetText();
-            if (currentText.has_value()) {
-                handleClipboardText(*currentText);
+            const auto currentPayload = m_clipboard->GetPayload();
+            if (currentPayload.has_value()) {
+                handleClipboardPayload(*currentPayload);
             }
 
             std::this_thread::sleep_for(std::chrono::milliseconds(m_options.clipboardPollMs));
