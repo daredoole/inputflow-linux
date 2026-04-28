@@ -59,6 +59,8 @@ jobs:
           dnf install -y \
             cmake \
             gcc-c++ \
+            gtk3-devel \
+            libayatana-appindicator3-devel \
             make \
             openssl-devel \
             pkgconf-pkg-config \
@@ -123,6 +125,7 @@ jobs:
       - name: Check shell syntax
         run: |
           bash -n mwb-desktop-ui.sh
+          bash -n scripts/inputflow-diagnostics-bundle.sh
           bash -n scripts/validate-rpm-packaging.sh
 
       - name: Validate RPM packaging skeleton
