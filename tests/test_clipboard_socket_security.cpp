@@ -295,7 +295,7 @@ void SendHeartbeatEx(MainSession& session, uint32_t remoteMachineId, uint16_t wi
 void PushClipboardText(int port, const std::string& key, uint32_t remoteMachineId, const std::string& text) {
     const int fd = ConnectLocal(port);
     mwb::CryptoHelper crypto(key);
-    const uint32_t magic = crypto.Get24BitHash();
+    const uint32_t magic = 0; // Clipboard socket uses zero magic (PowerToys compat)
 
     try {
         ReadAndDecrypt(fd, crypto, 16);
