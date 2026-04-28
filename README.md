@@ -36,7 +36,7 @@ What is working well in current testing:
 
 - Windows-to-Linux keyboard input
 - Windows-to-Linux pointer movement and clicks
-- text clipboard sync
+- Text, HTML, and image clipboard sync
 - `systemd --user` service management
 - Windows pairing-helper export for first-time setup and recovery
 
@@ -50,26 +50,40 @@ What still needs caution:
 
 Recommended first-run flow:
 
-1. Build the project and install a clipboard helper such as `wl-clipboard` on Wayland or `xclip` on X11.
-2. Generate a Linux config with the Windows host and Linux machine name:
-   `./build/mwb_client init-config --config ~/.config/mwb-client/config.ini --host 192.0.2.10 --name fedora`
-3. Store the shared key in the desktop keyring instead of leaving `key=` inline:
-   `printf '%s' 'MySecurityKey123' | ./build/mwb_client secret-store --config ~/.config/mwb-client/config.ini --secret-id desktop-default --stdin`
-4. Export the Windows helper:
+1. **Prerequisites:** Build the project and install a clipboard helper such as `wl-clipboard` (Wayland) or `xclip` (X11). Ensure `python3-gi` and GTK3 are installed for the configuration dialogs.
+2. **Setup UI:** Launch the easy setup menu with:
+   `./mwb-desktop-ui.sh menu`
+3. **Configure & Pair:** 
+   - Choose **Settings** to enter your Windows Host IP and Security Key.
+   - Or, choose **Peers (Discovery & Known)** to automatically find your Windows machine on the network.
+4. **Export Helper:** Once configured, the client can export a PowerShell helper to Windows with:
    `./build/mwb_client export-windows-pair --config ~/.config/mwb-client/config.ini --position top-left`
-5. Run the exported PowerShell helper on Windows to seed PowerToys MWB state:
+5. **Windows Sync:** Run the exported `.ps1` script on Windows to synchronize the Linux machine's identity with PowerToys Mouse Without Borders.
+6. **Start Service:** Choose **Start Service** from the `./mwb-desktop-ui.sh menu` to begin sharing.
+
+### Advanced CLI Setup
+
+For power users who prefer manual configuration:
+
+1. Generate a config:
+   `./build/mwb_client init-config --config ~/.config/mwb-client/config.ini --host 192.0.2.10 --name fedora`
+2. Store the shared key in the desktop keyring:
+   `printf '%s' 'MySecurityKey123' | ./build/mwb_client secret-store --config ~/.config/mwb-client/config.ini --secret-id desktop-default --stdin`
+3. Export the Windows helper:
+   `./build/mwb_client export-windows-pair --config ~/.config/mwb-client/config.ini --position top-left`
+4. Run the exported PowerShell helper on Windows to seed PowerToys MWB state:
    `powershell -ExecutionPolicy Bypass -File .\\inputflow-windows-pair-fedora.ps1 -ClosePowerToys`
-6. Install and start the Linux service:
+5. Install and start the Linux service:
    `./build/mwb_client install-user-service --config ~/.config/mwb-client/config.ini`
    `systemctl --user daemon-reload && systemctl --user enable --now mwb-client.service`
-7. Verify the service with `./build/mwb_client doctor --config ~/.config/mwb-client/config.ini`.
+6. Verify the service with `./build/mwb_client doctor --config ~/.config/mwb-client/config.ini`.
 
 ## Features
 
 - Absolute cursor movement and click injection (left, right, middle buttons, scroll wheel)
 - Keyboard injection via Virtual Key Code translation to Linux `EV_KEY` codes
 - Optional MPRIS media-key dispatch through `playerctl` for play/pause, next, previous, and stop
-- Text clipboard sync using PowerToys MWB's inline and clipboard-socket flows, with structured payload parsing that preserves CF_HTML metadata while keeping plain-text fallback behavior
+- Text, HTML, and Image clipboard sync using PowerToys MWB's inline and clipboard-socket flows, with structured payload parsing that preserves CF_HTML metadata while keeping plain-text fallback behavior
 - Automatic reconnect with backoff and idle retry when the Windows host is offline
 - Bidirectional TCP connection (connects out to Windows and accepts Windows's inbound connection)
 - Windows pairing-helper export that seeds PowerToys peer state when current builds do not learn the Linux peer automatically
@@ -106,13 +120,15 @@ mwb-client-linux/
 ### Prerequisites (Ubuntu / Debian)
 
 ```bash
-sudo apt-get install -y build-essential cmake pkg-config libssl-dev zlib1g-dev
+sudo apt-get install -y build-essential cmake pkg-config libssl-dev zlib1g-dev \
+    python3-gi gir1.2-gtk-3.0
 ```
 
 ### Prerequisites (Fedora)
 
 ```bash
-sudo dnf install -y gcc-c++ cmake make pkgconf-pkg-config openssl-devel zlib-devel
+sudo dnf install -y gcc-c++ cmake make pkgconf-pkg-config openssl-devel zlib-devel \
+    python3-gobject gtk3
 ```
 
 ### Compile
@@ -290,6 +306,10 @@ Recommended interval test:
 5. Prefer p95/p99 and max over average when judging input feel.
 
 If the client prints `socket.timeout`, the responder is not reachable. Confirm the Linux server is still running, the IP address is correct, the port matches, and the firewall allows TCP port `15111`.
+
+If the tray or controller prints `libayatana-appindicator is deprecated`, it is a known
+compatibility warning when building against older indicator libraries. The application
+remains functional.
 
 On Wayland, the client prefers `wl-paste --watch` for near-immediate clipboard updates when the compositor supports the wlroots data-control protocol. If watch mode is unavailable, local clipboard polling is disabled by default to avoid disrupting launcher shortcuts on GNOME-style sessions. Incoming clipboard writes from Windows still work, and you can opt into an explicit receive-only mode with `MWB_CLIPBOARD_RECEIVE_ONLY=1` or force poll fallback with `MWB_CLIPBOARD_FORCE_POLL=1`.
 
@@ -577,15 +597,13 @@ The machine name sent by this client must match the name configured in Windows's
 
 - Outside KDE Wayland sessions, automatic screen sizing from `/sys/class/drm` assumes enabled outputs form one horizontal desktop. Use `screen_width`/`screen_height` or `MWB_SCREEN_WIDTH`/`MWB_SCREEN_HEIGHT` for stacked displays, mixed-DPI layouts, or containerized runs. Incorrect geometry means incorrect absolute pointer scaling.
 - Some PowerToys builds still do not persist a blank-state Linux peer automatically. In that case, use the exported Windows pairing helper first.
-- Clipboard sync currently writes text to the local Linux clipboard. The protocol parser preserves CF_HTML metadata internally for richer future backends, but local multi-MIME HTML ownership, image clipboard data, and drag/drop file transfer are not implemented.
+- Clipboard sync preserves CF_HTML metadata and supports raw image transfers alongside plain text, but drag/drop file transfer is not yet implemented.
 - Wayland compositor handling of synthetic absolute `uinput` pointer devices varies. If cursor reachability breaks, run once with `MWB_MOUSE_TRACE=200`, reproduce the issue, then stop the service and inspect the dumped packet trace.
 
 ## Roadmap
 
 Short term:
 
-- Wire the structured clipboard payload model into richer local backends that can publish HTML plus plain-text fallback where the desktop protocol supports it.
-- Confirm the PowerToys MWB image wire payload format before enabling image clipboard receive/write support.
 - Add explicit file send/receive into a configured folder.
 
 Longer term:

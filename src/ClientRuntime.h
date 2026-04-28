@@ -78,7 +78,7 @@ private:
     std::atomic<bool> m_clipboardWatcherRunning{false};
     std::thread m_clipboardWatcher;
     std::mutex m_clipboardStateMutex;
-    std::optional<std::string> m_lastClipboardText;
+    std::optional<ClipboardPayload> m_lastClipboardPayload;
     std::string m_clipboardBackendName;
 };
 

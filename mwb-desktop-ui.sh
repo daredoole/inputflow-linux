@@ -80,6 +80,10 @@ require_ui() {
     printf 'zenity is required for %s desktop UI.\n' "$APP_NAME" >&2
     exit 1
   fi
+  if ! python3 -c "import gi; gi.require_version('Gtk', '3.0')" >/dev/null 2>&1; then
+    printf 'python3-gi and GTK3 are required for %s desktop UI.\n' "$APP_NAME" >&2
+    exit 1
+  fi
 }
 
 require_client_binary() {
@@ -98,6 +102,12 @@ require_tray_binary() {
 
 start_tray() {
   require_tray_binary || return 1
+  if pgrep -x "mwb_tray" >/dev/null; then
+    printf 'Restarting existing InputFlow tray...\n'
+    pkill -x "mwb_tray" || true
+    # Give the lock file a moment to be released
+    sleep 0.5
+  fi
   exec "$TRAY_BIN"
 }
 
@@ -649,31 +659,22 @@ service_state_label() {
 }
 
 menu_summary_text() {
-  local state host machine_name port key key_file secret_id auth_label auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms
+  local state host auth_label auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms
   state="$(service_state)"
   host="$(read_config_value host)"
-  machine_name="$(read_config_value machine_name)"
-  port="$(read_config_value port)"
   key="$(read_config_value key)"
   key_file="$(read_config_value key_file)"
   secret_id="$(read_secret_id_value)"
   IFS=$'\t' read -r auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms < <(read_connection_behavior_values)
   auth_label="$(configured_auth_label "$key" "$key_file" "$secret_id")"
 
-  [[ -n "$host" ]] || host="not configured"
-  [[ -n "$machine_name" ]] || machine_name="not set"
-  [[ -n "$port" ]] || port="15101"
+  [[ -n "$host" ]] || host="None"
 
-  printf 'Service: %s\nConfigured host: %s\nAuthentication: %s\nMachine name: %s\nPort: %s\nConnection: %s (%s-%s ms, idle %s ms)' \
+  printf 'Status: %s\nHost: %s\nAuth: %s\nReconnect: %s' \
     "$(service_state_label "$state")" \
     "$host" \
     "$auth_label" \
-    "$machine_name" \
-    "$port" \
-    "$(connection_behavior_mode_label "$auto_connect_enabled")" \
-    "$reconnect_initial_backoff_ms" \
-    "$reconnect_max_backoff_ms" \
-    "$reconnect_idle_retry_ms"
+    "$( [[ "$auto_connect_enabled" == "true" ]] && printf 'Auto' || printf 'Manual' )"
 }
 
 show_status() {
@@ -731,12 +732,16 @@ show_peers() {
     --text="Peer: ${selected_name:-unknown} ($selected_host:$selected_port)" \
     --column="Use" --column="Action" \
     TRUE "Use as configured Windows host" \
+    FALSE "Edit settings for this peer" \
     FALSE "Forget this peer" || true)"
   [[ -n "$selected_action" ]] || return 0
 
   case "$selected_action" in
     "Use as configured Windows host")
       set_configured_host "$selected_host"
+      ;;
+    "Edit settings for this peer")
+      edit_settings "$selected_host"
       ;;
     "Forget this peer")
       if zenity --question --title="$APP_NAME peer actions" --width=480 \
@@ -813,27 +818,8 @@ discover_and_save_peer() {
     return 1
   fi
 
-  host="$(read_config_value host)"
-  key="$(read_config_value key)"
-  key_file="$(read_config_value key_file)"
-  secret_id="$(read_secret_id_value)"
-  auth_count="$(configured_auth_source_count "$key" "$key_file" "$secret_id")"
-
-  if (( auth_count == 1 )); then
-    action="$(zenity --list --radiolist --title="$APP_NAME discovered peer" --width=560 --height=260 \
-      --text="Discovered Windows host: $selected\n\nChoose how to use it." \
-      --column="Use" --column="Action" \
-      TRUE "Use as configured Windows host now" \
-      FALSE "Open full settings for this peer" || true)"
-    [[ -n "$action" ]] || return 1
-    if [[ "$action" == "Use as configured Windows host now" ]]; then
-      set_configured_host "$selected"
-    else
-      edit_settings "$selected" || return 1
-    fi
-  else
-    edit_settings "$selected" || return 1
-  fi
+  # Always prompt for settings to ensure key is entered/verified
+  edit_settings "$selected" || return 1
 
   if ! service_active; then
     if zenity --question --title="$APP_NAME" --width=480 \
@@ -846,194 +832,92 @@ discover_and_save_peer() {
 edit_settings() {
   local preset_host="${1:-}"
   local host key key_file secret_id secret_key_name machine_name port screen_width screen_height auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms clipboard_enabled clipboard_force_poll clipboard_poll_ms
-  local clipboard_send_enabled current_auth_mode auth_action key_mode cleanup_secret_id saved_message host_dialog_title host_dialog_text host_entry_text
-  local mpris_media_keys_enabled mpris_player latency_report
+  local clipboard_send_enabled current_auth_mode auth_action key_mode cleanup_secret_id saved_message
+  local mpris_media_keys_enabled mpris_player latency_report gui_output
+  
   host="$(read_config_value host)"
   key="$(read_config_value key)"
   key_file="$(read_config_value key_file)"
   secret_id="$(read_secret_id_value)"
   secret_key_name="$(detect_secret_id_key_name)"
   machine_name="$(read_config_value machine_name)"
-  port="$(read_config_value port)"
+  port="$(read_config_value port)"; [[ -n "$port" ]] || port="15101"
   screen_width="$(read_config_value screen_width)"
   screen_height="$(read_config_value screen_height)"
   IFS=$'\t' read -r auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms < <(read_connection_behavior_values)
-  clipboard_enabled="$(read_config_value clipboard_enabled)"
-  clipboard_send_enabled="$(read_config_value clipboard_send_enabled)"
-  clipboard_force_poll="$(read_config_value clipboard_force_poll)"
-  clipboard_poll_ms="$(read_config_value clipboard_poll_ms)"
-  mpris_media_keys_enabled="$(read_config_value "$MPRIS_MEDIA_KEYS_CONFIG_KEY")"
+  clipboard_enabled="$(read_config_value clipboard_enabled)"; [[ -n "$clipboard_enabled" ]] || clipboard_enabled="true"
+  clipboard_send_enabled="$(read_config_value clipboard_send_enabled)"; [[ -n "$clipboard_send_enabled" ]] || clipboard_send_enabled="true"
+  clipboard_force_poll="$(read_config_value clipboard_force_poll)"; [[ -n "$clipboard_force_poll" ]] || clipboard_force_poll="false"
+  clipboard_poll_ms="$(read_config_value clipboard_poll_ms)"; [[ -n "$clipboard_poll_ms" ]] || clipboard_poll_ms="1000"
+  mpris_media_keys_enabled="$(read_config_value "$MPRIS_MEDIA_KEYS_CONFIG_KEY")"; [[ -n "$mpris_media_keys_enabled" ]] || mpris_media_keys_enabled="true"
   mpris_player="$(read_config_value "$MPRIS_PLAYER_CONFIG_KEY")"
-  latency_report="$(read_config_value "$LATENCY_REPORT_CONFIG_KEY")"
+  latency_report="$(read_config_value "$LATENCY_REPORT_CONFIG_KEY")"; [[ -n "$latency_report" ]] || latency_report="false"
 
-  [[ -n "$port" ]] || port="15101"
-  [[ -n "$clipboard_enabled" ]] || clipboard_enabled="true"
-  [[ -n "$clipboard_send_enabled" ]] || clipboard_send_enabled="true"
-  [[ -n "$clipboard_force_poll" ]] || clipboard_force_poll="false"
-  [[ -n "$clipboard_poll_ms" ]] || clipboard_poll_ms="1000"
-  [[ -n "$mpris_media_keys_enabled" ]] || mpris_media_keys_enabled="true"
-  [[ -n "$latency_report" ]] || latency_report="false"
   current_auth_mode="$(configured_auth_mode "$key" "$key_file" "$secret_id")"
 
-  if (( $(configured_auth_source_count "$key" "$key_file" "$secret_id") > 1 )); then
-    zenity --warning --text="Multiple authentication sources are configured. Saving settings will keep only the method selected in the next step."
-  fi
+  local fields="host:Windows Host:entry||machine_name:Local Machine Name:entry||port:Network Port:entry||screen_width:Screen Width:entry||screen_height:Screen Height:entry||clipboard_poll_ms:Clipboard Poll (ms):entry||mpris_player:MPRIS Player:entry||clipboard_enabled:Sync Clipboard:switch||clipboard_send_enabled:Send Local Clipboard:switch||clipboard_force_poll:Force Wayland Polling:switch||mpris_media_keys_enabled:Enable Media Keys:switch||latency_report:Print Latency Report:switch"
+  local values="${preset_host:-$host}|$machine_name|$port|$screen_width|$screen_height|$clipboard_poll_ms|$mpris_player|$clipboard_enabled|$clipboard_send_enabled|$clipboard_force_poll|$mpris_media_keys_enabled|$latency_report"
 
-  if [[ -n "$preset_host" ]]; then
-    host_dialog_title="$APP_NAME add discovered peer"
-    if [[ -n "$host" && "$host" != "$preset_host" ]]; then
-      host_dialog_text="Discovered Windows host. Saving this replaces the currently configured host.\n\nCurrent host: $host\nDiscovered host: $preset_host"
-    else
-      host_dialog_text="Discovered Windows host. Saving this sets the configured host used by InputFlow."
-    fi
-    host_entry_text="$preset_host"
-  else
-    host_dialog_title="$APP_NAME settings"
-    host_dialog_text="Configured Windows host.\n\nEdit the current host entry used by InputFlow."
-    host_entry_text="$host"
-  fi
+  gui_output="$(python3 "$SCRIPT_DIR/src/ConfigDialog.py" "$APP_NAME Settings" "$fields" "$values" || true)"
+  [[ -n "$gui_output" ]] || return 1
 
-  host="$(zenity --entry --title="$host_dialog_title" --text="$host_dialog_text" --entry-text="$host_entry_text" || true)"
-  [[ -n "$host" ]] || return 1
+  IFS='|' read -r host machine_name port screen_width screen_height clipboard_poll_ms mpris_player clipboard_enabled clipboard_send_enabled clipboard_force_poll mpris_media_keys_enabled latency_report <<< "$gui_output"
 
+  # Validation
+  if ! is_integer_in_range "$port" 1 65535; then zenity --error --text="Port must be 1-65535."; return 1; fi
+
+  # Authentication (Keep Zenity for secret-tool branching)
   while true; do
-    auth_action="$(zenity --list --radiolist --title="$APP_NAME authentication" --width=520 --height=220 \
-      --text="Current authentication: $current_auth_mode" \
+    auth_action="$(zenity --list --radiolist --title="$APP_NAME Auth" --width=500 --height=220 \
+      --text="Method: $current_auth_mode" \
       --column="Use" --column="Action" \
-      TRUE "Edit authentication settings" \
-      FALSE "Reveal current key" || true)"
+      TRUE "Change method" \
+      FALSE "Reveal key" \
+      FALSE "Continue" || true)"
     [[ -n "$auth_action" ]] || return 1
-    if [[ "$auth_action" != "Reveal current key" ]]; then
-      break
+    [[ "$auth_action" == "Continue" ]] && break
+    if [[ "$auth_action" == "Reveal key" ]]; then
+      show_current_security_key "$key" "$key_file" "$secret_id" "$current_auth_mode" || true
+      continue
     fi
-    show_current_security_key "$key" "$key_file" "$secret_id" "$current_auth_mode" || true
-  done
 
-  key_mode="$(zenity --list --radiolist --title="$APP_NAME authentication" --width=500 --height=220 \
-    --column="Use" --column="Method" \
-    $([[ "$current_auth_mode" == "Inline security key" ]] && printf 'TRUE' || printf 'FALSE') "Inline security key" \
-    $([[ "$current_auth_mode" == "Key file path" ]] && printf 'TRUE' || printf 'FALSE') "Key file path" \
-    $([[ "$current_auth_mode" == "Secret Service entry" ]] && printf 'TRUE' || printf 'FALSE') "Secret Service entry" || true)"
-  [[ -n "$key_mode" ]] || return 1
+    key_mode="$(zenity --list --radiolist --title="$APP_NAME Method" --width=500 --height=220 \
+      --column="Use" --column="Method" \
+      $([[ "$current_auth_mode" == "Inline security key" ]] && printf 'TRUE' || printf 'FALSE') "Inline security key" \
+      $([[ "$current_auth_mode" == "Key file path" ]] && printf 'TRUE' || printf 'FALSE') "Key file path" \
+      $([[ "$current_auth_mode" == "Secret Service entry" ]] && printf 'TRUE' || printf 'FALSE') "Secret Service entry" || true)"
+    [[ -n "$key_mode" ]] || return 1
 
-  if [[ "$key_mode" == "Inline security key" ]]; then
-    local entered_key
-    entered_key="$(zenity --password --title="$APP_NAME settings" --text="Security key$([[ "$current_auth_mode" == "Inline security key" && -n "$key" ]] && printf ' (leave blank to keep current key)')" || true)"
-    if [[ -n "$entered_key" ]]; then
-      key="$entered_key"
-    elif [[ -z "$key" || "$current_auth_mode" != "Inline security key" ]]; then
-      zenity --error --text="Enter a security key to use inline."
-      return 1
-    fi
-    key_file=""
-    cleanup_secret_id="$(choose_secret_cleanup_target "$secret_id" "$key_mode" "" || true)"
-    secret_id=""
-  else
-    key=""
-    if [[ "$key_mode" == "Key file path" ]]; then
-      local entered_key_file key_file_dialog_path
-      key_file_dialog_path="${key_file:-$HOME/}"
-      if [[ -n "$key_file" ]]; then
-        key_file_dialog_path="$(resolve_config_relative_path "$key_file")"
-      fi
-      entered_key_file="$(zenity --file-selection --title="$APP_NAME settings" --filename="$key_file_dialog_path" || true)"
+    if [[ "$key_mode" == "Inline security key" ]]; then
+      local entered_key
+      entered_key="$(zenity --password --title="$APP_NAME Key" --text="Security key" || true)"
+      if [[ -n "$entered_key" ]]; then key="$entered_key"; fi
+      key_file=""; cleanup_secret_id="$(choose_secret_cleanup_target "$secret_id" "$key_mode" "" || true)"; secret_id=""
+    elif [[ "$key_mode" == "Key file path" ]]; then
+      local entered_key_file
+      entered_key_file="$(zenity --file-selection --title="$APP_NAME Key File" || true)"
       [[ -n "$entered_key_file" ]] || return 1
-      key_file="$entered_key_file"
-      cleanup_secret_id="$(choose_secret_cleanup_target "$secret_id" "$key_mode" "" || true)"
-      secret_id=""
+      key_file="$entered_key_file"; key=""; cleanup_secret_id="$(choose_secret_cleanup_target "$secret_id" "$key_mode" "" || true)"; secret_id=""
     else
       local entered_secret_id entered_secret_key
-      entered_secret_id="$(zenity --entry --title="$APP_NAME settings" --text="Secret Service identifier" --entry-text="$secret_id" || true)"
+      entered_secret_id="$(zenity --entry --title="$APP_NAME Secret ID" --text="Identifier" --entry-text="$secret_id" || true)"
       [[ -n "$entered_secret_id" ]] || return 1
-      entered_secret_key="$(zenity --password --title="$APP_NAME settings" --text="Security key to store in Secret Service$([[ "$current_auth_mode" == "Secret Service entry" && "$entered_secret_id" == "$secret_id" ]] && printf ' (leave blank to keep the stored key)')" || true)"
-      if [[ -n "$entered_secret_key" ]]; then
-        store_secret_service_key "$entered_secret_id" "$entered_secret_key" || return 1
-      elif [[ "$current_auth_mode" != "Secret Service entry" || "$entered_secret_id" != "$secret_id" ]]; then
-        zenity --error --text="Enter a security key to store for the selected Secret Service identifier."
-        return 1
-      fi
-      unset entered_secret_key
-      key_file=""
-      cleanup_secret_id="$(choose_secret_cleanup_target "$secret_id" "$key_mode" "$entered_secret_id" || true)"
-      secret_id="$entered_secret_id"
+      entered_secret_key="$(zenity --password --title="$APP_NAME Secret Key" --text="Key to store" || true)"
+      if [[ -n "$entered_secret_key" ]]; then store_secret_service_key "$entered_secret_id" "$entered_secret_key" || return 1; fi
+      key_file=""; key=""; cleanup_secret_id="$(choose_secret_cleanup_target "$secret_id" "$key_mode" "$entered_secret_id" || true)"; secret_id="$entered_secret_id"
     fi
-  fi
-
-  machine_name="$(zenity --entry --title="$APP_NAME settings" --text="Machine name" --entry-text="$machine_name" || true)"
-  [[ -n "$machine_name" ]] || machine_name=""
-  port="$(zenity --entry --title="$APP_NAME settings" --text="Port" --entry-text="$port" || true)"
-  [[ -n "$port" ]] || return 1
-  if ! is_integer_in_range "$port" 1 65535; then
-    zenity --error --text="Port must be an integer between 1 and 65535."
-    return 1
-  fi
-  screen_width="$(zenity --entry --title="$APP_NAME settings" --text="Screen width override (blank for automatic)" --entry-text="$screen_width" || true)"
-  if [[ -n "$screen_width" ]] && ! is_integer_in_range "$screen_width" 1 2147483647; then
-    zenity --error --text="Screen width must be blank or a positive integer."
-    return 1
-  fi
-  screen_height="$(zenity --entry --title="$APP_NAME settings" --text="Screen height override (blank for automatic)" --entry-text="$screen_height" || true)"
-  if [[ -n "$screen_height" ]] && ! is_integer_in_range "$screen_height" 1 2147483647; then
-    zenity --error --text="Screen height must be blank or a positive integer."
-    return 1
-  fi
-  if { [[ -n "$screen_width" && -z "$screen_height" ]] || [[ -z "$screen_width" && -n "$screen_height" ]]; }; then
-    zenity --error --text="Set both screen width and screen height, or leave both blank for automatic sizing."
-    return 1
-  fi
-  clipboard_poll_ms="$(zenity --entry --title="$APP_NAME settings" --text="Clipboard poll interval (ms)" --entry-text="$clipboard_poll_ms" || true)"
-  [[ -n "$clipboard_poll_ms" ]] || return 1
-  if ! is_integer_in_range "$clipboard_poll_ms" 1 2147483647; then
-    zenity --error --text="Clipboard poll interval must be a positive integer."
-    return 1
-  fi
-
-  local toggles
-  toggles="$(zenity --list --checklist --title="$APP_NAME clipboard options" --width=500 --height=250 \
-    --column="Enabled" --column="Option" \
-    $([[ "$clipboard_enabled" == "true" ]] && printf 'TRUE' || printf 'FALSE') "Enable clipboard sync" \
-    $([[ "$clipboard_send_enabled" == "true" ]] && printf 'TRUE' || printf 'FALSE') "Send local clipboard changes" \
-    $([[ "$clipboard_force_poll" == "true" ]] && printf 'TRUE' || printf 'FALSE') "Force Wayland polling fallback" \
-    --separator='|' || true)"
-
-  clipboard_enabled="false"
-  clipboard_send_enabled="false"
-  clipboard_force_poll="false"
-  [[ "$toggles" == *"Enable clipboard sync"* ]] && clipboard_enabled="true"
-  [[ "$toggles" == *"Send local clipboard changes"* ]] && clipboard_send_enabled="true"
-  [[ "$toggles" == *"Force Wayland polling fallback"* ]] && clipboard_force_poll="true"
-
-  mpris_player="$(zenity --entry --title="$APP_NAME media keys" --text="MPRIS player name (blank for active player)" --entry-text="$mpris_player" || true)"
-  toggles="$(zenity --list --checklist --title="$APP_NAME media keys" --width=500 --height=180 \
-    --column="Enabled" --column="Option" \
-    $([[ "$mpris_media_keys_enabled" == "true" ]] && printf 'TRUE' || printf 'FALSE') "Dispatch media keys through MPRIS/playerctl" \
-    $([[ "$latency_report" == "true" ]] && printf 'TRUE' || printf 'FALSE') "Print input latency report when service stops" \
-    --separator='|' || true)"
-  mpris_media_keys_enabled="false"
-  latency_report="false"
-  [[ "$toggles" == *"Dispatch media keys through MPRIS/playerctl"* ]] && mpris_media_keys_enabled="true"
-  [[ "$toggles" == *"Print input latency report when service stops"* ]] && latency_report="true"
+    current_auth_mode="$key_mode"
+    break
+  done
 
   write_config "$host" "$key" "$key_file" "$secret_id" "$machine_name" "$port" "$auto_connect_enabled" "$reconnect_initial_backoff_ms" "$reconnect_max_backoff_ms" "$reconnect_idle_retry_ms" "$clipboard_enabled" "$clipboard_send_enabled" "$clipboard_force_poll" "$clipboard_poll_ms" "$screen_width" "$screen_height" "$mpris_media_keys_enabled" "$mpris_player" "$latency_report" "$secret_key_name"
-  if [[ -n "$preset_host" ]]; then
-    saved_message="Saved $host as the configured Windows host in $CONFIG_PATH"
-  else
-    saved_message="Saved settings to $CONFIG_PATH"
-  fi
-  if [[ -n "$cleanup_secret_id" ]]; then
-    if clear_secret_service_key "$cleanup_secret_id"; then
-      saved_message+=$'\nCleared the previous Secret Service entry.'
-    else
-      saved_message+=$'\nThe previous Secret Service entry could not be cleared.'
-    fi
-  fi
-  zenity --info --text="$saved_message"
-  offer_service_restart_if_active "Settings were updated while the background service is running."
+  zenity --info --text="Settings saved."
+  offer_service_restart_if_active "Settings updated."
 }
 
 edit_connection_behavior() {
   local host key key_file secret_id secret_key_name machine_name port screen_width screen_height auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms clipboard_enabled clipboard_send_enabled clipboard_force_poll clipboard_poll_ms mpris_media_keys_enabled mpris_player latency_report
-  local toggles summary_text
+  local gui_output
 
   host="$(read_config_value host)"
   key="$(read_config_value key)"
@@ -1053,47 +937,21 @@ edit_connection_behavior() {
   mpris_player="$(read_config_value "$MPRIS_PLAYER_CONFIG_KEY")"
   latency_report="$(read_config_value "$LATENCY_REPORT_CONFIG_KEY")"; [[ -n "$latency_report" ]] || latency_report="false"
 
-  summary_text="$(connection_behavior_summary "$auto_connect_enabled" "$reconnect_initial_backoff_ms" "$reconnect_max_backoff_ms" "$reconnect_idle_retry_ms")"
-  toggles="$(zenity --list --checklist --title="$APP_NAME connection behavior" --width=560 --height=220 \
-    --text="$summary_text" \
-    --column="Enabled" --column="Option" \
-    $([[ "$auto_connect_enabled" == "true" ]] && printf 'TRUE' || printf 'FALSE') "Automatically reconnect to the configured Windows host" \
-    --separator='|' || true)"
+  local fields="mode:Connection Mode|Auto-reconnect to host|Manual start only:combo||initial:Initial Retry Delay (ms):entry||max:Maximum Retry Delay (ms):entry||idle:Idle Retry Interval (ms):entry"
+  local mode_val="$( [[ "$auto_connect_enabled" == "true" ]] && printf 'Auto-reconnect to host' || printf 'Manual start only' )"
+  local values="$mode_val|$reconnect_initial_backoff_ms|$reconnect_max_backoff_ms|$reconnect_idle_retry_ms"
+
+  gui_output="$(python3 "$SCRIPT_DIR/src/ConfigDialog.py" "$APP_NAME Connection" "$fields" "$values" || true)"
+  [[ -n "$gui_output" ]] || return 1
+
+  IFS='|' read -r mode_label reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms <<< "$gui_output"
 
   auto_connect_enabled="false"
-  [[ "$toggles" == *"Automatically reconnect to the configured Windows host"* ]] && auto_connect_enabled="true"
-
-  reconnect_initial_backoff_ms="$(zenity --entry --title="$APP_NAME connection behavior" --text="Initial retry delay in milliseconds" --entry-text="$reconnect_initial_backoff_ms" || true)"
-  [[ -n "$reconnect_initial_backoff_ms" ]] || return 1
-  reconnect_max_backoff_ms="$(zenity --entry --title="$APP_NAME connection behavior" --text="Maximum retry delay in milliseconds" --entry-text="$reconnect_max_backoff_ms" || true)"
-  [[ -n "$reconnect_max_backoff_ms" ]] || return 1
-  reconnect_idle_retry_ms="$(zenity --entry --title="$APP_NAME connection behavior" --text="Idle retry interval in milliseconds once the peer stays offline" --entry-text="$reconnect_idle_retry_ms" || true)"
-  [[ -n "$reconnect_idle_retry_ms" ]] || return 1
-
-  if ! is_integer_in_range "$reconnect_initial_backoff_ms" 1 2147483647; then
-    zenity --error --text="Initial retry delay must be a positive integer."
-    return 1
-  fi
-  if ! is_integer_in_range "$reconnect_max_backoff_ms" 1 2147483647; then
-    zenity --error --text="Maximum retry delay must be a positive integer."
-    return 1
-  fi
-  if ! is_integer_in_range "$reconnect_idle_retry_ms" 1 2147483647; then
-    zenity --error --text="Idle retry interval must be a positive integer."
-    return 1
-  fi
-  if (( reconnect_initial_backoff_ms > reconnect_max_backoff_ms )); then
-    zenity --error --text="Initial retry delay cannot exceed the maximum retry delay."
-    return 1
-  fi
-  if (( reconnect_idle_retry_ms < reconnect_max_backoff_ms )); then
-    zenity --error --text="Idle retry interval should be greater than or equal to the maximum retry delay."
-    return 1
-  fi
+  [[ "$mode_label" == "Auto-reconnect to host" ]] && auto_connect_enabled="true"
 
   write_config "$host" "$key" "$key_file" "$secret_id" "$machine_name" "$port" "$auto_connect_enabled" "$reconnect_initial_backoff_ms" "$reconnect_max_backoff_ms" "$reconnect_idle_retry_ms" "$clipboard_enabled" "$clipboard_send_enabled" "$clipboard_force_poll" "$clipboard_poll_ms" "$screen_width" "$screen_height" "$mpris_media_keys_enabled" "$mpris_player" "$latency_report" "$secret_key_name"
-  zenity --info --text="Saved connection behavior to $CONFIG_PATH"
-  offer_service_restart_if_active "Connection behavior was updated while the background service is running."
+  zenity --info --text="Connection behavior saved."
+  offer_service_restart_if_active "Connection behavior updated."
 }
 
 show_tray_visibility_help() {
@@ -1242,31 +1100,35 @@ EOF
 main_menu() {
   while true; do
     local choice
-    choice="$(zenity --list --title="$APP_NAME" --text="$(menu_summary_text)" --width=540 --height=380 \
+    choice="$(zenity --list --title="$APP_NAME" --text="$(menu_summary_text)" --width=540 --height=400 \
       --column="Action" \
-      "Open settings" \
-      "Connection behavior" \
-      "Discover peers" \
-      "Start background service" \
-      "Restart background service" \
-      "Stop background service" \
-      "Show known peers" \
-      "Tray visibility help" \
-      "Show service details" \
-      "Install desktop entries" \
+      "Settings" \
+      "Peers (Discovery & Known)" \
+      "Connection Behavior" \
+      "Start Service" \
+      "Stop Service" \
+      "Restart Service" \
+      "Show Service Details" \
+      "Install Desktop Entries" \
+      "Tray Visibility Help" \
       "Quit" || true)"
 
     case "$choice" in
-      "Open settings") edit_settings ;;
-      "Connection behavior") edit_connection_behavior ;;
-      "Discover peers") discover_and_save_peer ;;
-      "Start background service") start_session ;;
-      "Restart background service") restart_session ;;
-      "Stop background service") stop_session ;;
-      "Show known peers") show_peers ;;
-      "Tray visibility help") show_tray_visibility_help ;;
-      "Show service details") show_status ;;
-      "Install desktop entries") install_desktop_entry ;;
+      "Settings") edit_settings ;;
+      "Peers (Discovery & Known)")
+        local peer_choice
+        peer_choice="$(zenity --list --title="$APP_NAME Peers" --text="Manage peers" --width=400 --height=250 \
+          --column="Action" "Discover Peers" "Known Peers" "Back" || true)"
+        [[ "$peer_choice" == "Discover Peers" ]] && discover_and_save_peer
+        [[ "$peer_choice" == "Known Peers" ]] && show_peers
+        ;;
+      "Connection Behavior") edit_connection_behavior ;;
+      "Start Service") start_session ;;
+      "Stop Service") stop_session ;;
+      "Restart Service") restart_session ;;
+      "Show Service Details") show_status ;;
+      "Install Desktop Entries") install_desktop_entry ;;
+      "Tray Visibility Help") show_tray_visibility_help ;;
       ""|"Quit") exit 0 ;;
     esac
   done

@@ -362,10 +362,12 @@ void TestClipboardSocketRequiresActiveSession() {
     std::condition_variable clipboardChanged;
     std::optional<std::string> clipboardText;
 
-    manager.SetOnClipboardCallback([&](const std::string& text) {
+    manager.SetOnClipboardCallback([&](const mwb::ClipboardPayload& payload) {
         {
             std::lock_guard<std::mutex> lock(clipboardMutex);
-            clipboardText = text;
+            if (payload.plainText) {
+                clipboardText = *payload.plainText;
+            }
         }
         clipboardChanged.notify_all();
     });
@@ -428,10 +430,12 @@ void TestClipboardTrustRevokedAfterControlDisconnect() {
     std::mutex clipboardMutex;
     std::condition_variable clipboardChanged;
     std::optional<std::string> clipboardText;
-    manager.SetOnClipboardCallback([&](const std::string& text) {
+    manager.SetOnClipboardCallback([&](const mwb::ClipboardPayload& payload) {
         {
             std::lock_guard<std::mutex> lock(clipboardMutex);
-            clipboardText = text;
+            if (payload.plainText) {
+                clipboardText = *payload.plainText;
+            }
         }
         clipboardChanged.notify_all();
     });
