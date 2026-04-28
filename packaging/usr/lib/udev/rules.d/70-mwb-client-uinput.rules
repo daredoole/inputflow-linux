@@ -1,0 +1,3 @@
+# Allow opted-in desktop users to access uinput without running InputFlow as root.
+# The inputflow group is created by packaging/usr/lib/sysusers.d/mwb-client.conf.
+SUBSYSTEM=="misc", KERNEL=="uinput", GROUP="inputflow", MODE="0660", OPTIONS+="static_node=uinput"
