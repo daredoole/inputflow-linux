@@ -18,7 +18,7 @@ InputFlow is a native Linux peer for Microsoft PowerToys Mouse Without Borders (
 | Clipboard receive/send | Supported beta path | Requires local helpers: `wl-clipboard` on Wayland or `xclip`/`xsel` on X11. Availability is reported by `doctor`. |
 | systemd user service | Opt-in | Packaging includes a user unit, but users should enable/start it only after validating config, key source, and `/dev/uinput` access. |
 | Network trust model | Trusted LAN/subnet | Use on a trusted local network. Do not expose MWB ports to untrusted networks or the public internet. |
-| Display-level topology config | Opt-in preview | The contract is documented in [Topology Config Contract](topology.md), but the default runtime remains MWB-compatible machine placement while handoff behavior matures. |
+| Display-level topology config | Opt-in | The contract is documented in [Topology Config Contract](topology.md), and the default runtime remains MWB-compatible machine placement unless topology is enabled. |
 
 ## Linux Session Details
 
@@ -54,6 +54,6 @@ The systemd user service is a convenience, not a required first step. During mig
 
 ## Topology Expectations
 
-Current compatibility is machine-level MWB placement. Display-level topology is intentionally gated and opt-in so InputFlow can remain compatible with PowerToys MWB while the runtime handoff behavior matures.
+Current default compatibility is machine-level MWB placement. Display-level topology is intentionally gated and opt-in so InputFlow can remain compatible with PowerToys MWB unless the user enables explicit machine/display links.
 
-The topology contract separates machines from displays and supports configurable wrap policies, AAB/BAA/ABA layouts, stacked layouts, asymmetric layouts, and dry-run path previews. See [Topology Config Contract](topology.md) for the preview file format and validation expectations.
+The topology contract separates machines from displays and supports configurable wrap policies, AAB/BAA/ABA layouts, stacked layouts, asymmetric layouts, and cross-machine edge handoff. See [Topology Config Contract](topology.md) for the file format and validation expectations.

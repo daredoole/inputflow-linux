@@ -49,7 +49,7 @@ topology_enabled=true
 topology_file=/home/example/.config/mwb-client/topology-side-by-side.topology
 ```
 
-Current limitation: the topology file is saved for topology-aware runtime builds, but runtime handoff is still resolver/trace-gated. Verify behavior with PowerToys MWB and the exported helper until direct cross-machine handoff enforcement lands.
+When topology is enabled, configured cross-machine edge transitions are enforced at runtime. Same-machine transitions remain local, and invalid topology falls back to the existing behavior with a warning.
 
 ## Health Check
 

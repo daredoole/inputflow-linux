@@ -280,6 +280,7 @@ ClientRuntime::ScreenSize ClientRuntime::DetectScreenSize() const {
 
 void ClientRuntime::ConfigureTopologyPreview(const ScreenSize& screenSize) {
     m_dispatcher.SetTopologyPreview(nullptr, {}, false);
+    m_dispatcher.SetTopologyHandoff({}, 0, 0, false, {});
     m_topology.reset();
 
     if (!m_options.topologyRuntimeEnabled) {
@@ -321,9 +322,20 @@ void ClientRuntime::ConfigureTopologyPreview(const ScreenSize& screenSize) {
 
     m_topology = std::make_shared<TopologyModel>(std::move(loaded));
     m_dispatcher.SetTopologyPreview(m_topology, sourceDisplayId, true);
-    std::cout << "[TOPOLOGY] Loaded dry-run topology preview from "
+    m_dispatcher.SetTopologyHandoff(
+        m_options.localMachineName,
+        screenSize.width,
+        screenSize.height,
+        true,
+        [this](const MouseData& mouse,
+               const TopologyPointerTransition&,
+               const std::string&) {
+            return m_network && m_network->SendMouse(mouse);
+        });
+    std::cout << "[TOPOLOGY] Loaded topology from "
               << m_options.topologyFilePath.string()
-              << " using source display " << sourceDisplayId << "." << std::endl;
+              << " using source display " << sourceDisplayId
+              << " with cross-machine handoff enforcement enabled." << std::endl;
 }
 
 int ClientRuntime::Run() {

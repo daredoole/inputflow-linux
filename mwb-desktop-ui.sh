@@ -1049,10 +1049,8 @@ generate_topology_content() {
 # InputFlow topology file
 # format=inputflow-topology-draft-v1
 # preset=$preset
-# Current limitation: runtime handoff is resolver/trace-gated. This file and
-# $TOPOLOGY_FILE_CONFIG_KEY/$TOPOLOGY_ENABLED_CONFIG_KEY config keys are saved
-# for topology-aware runtime builds, but the current service logs dry-run
-# transitions until direct cross-machine handoff enforcement lands.
+# $TOPOLOGY_FILE_CONFIG_KEY/$TOPOLOGY_ENABLED_CONFIG_KEY enable topology-aware
+# runtime handoff. The preview step below only shows the file before writing it.
 wrap=$wrap_policy
 machine=$machine_a
 machine=$machine_b
@@ -1167,7 +1165,7 @@ layout_wizard() {
   rm -f "$preview_path"
 
   if ! zenity --question --title="$APP_NAME topology/layout wizard" --width=620 \
-      --text="Apply this topology?\n\nWill write:\n$topology_path\n\nWill set:\n$TOPOLOGY_ENABLED_CONFIG_KEY=true\n$TOPOLOGY_FILE_CONFIG_KEY=$topology_path\n\nCurrent limitation: runtime handoff is resolver/trace-gated until direct cross-machine handoff enforcement lands."; then
+      --text="Apply this topology?\n\nWill write:\n$topology_path\n\nWill set:\n$TOPOLOGY_ENABLED_CONFIG_KEY=true\n$TOPOLOGY_FILE_CONFIG_KEY=$topology_path\n\nTopology will enforce configured cross-machine edge handoffs at runtime. Same-machine edges remain local."; then
     return 1
   fi
 

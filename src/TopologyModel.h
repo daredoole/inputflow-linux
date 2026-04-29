@@ -56,6 +56,11 @@ struct TopologyPointerTransition {
     int coordinate{0};
 };
 
+struct TopologyNormalizedPoint {
+    int x{0};
+    int y{0};
+};
+
 enum class TopologyIssueCode {
     DuplicateMachine,
     DuplicateDisplay,
@@ -86,6 +91,8 @@ public:
     const std::vector<Display>& displays() const;
     const std::vector<BorderLink>& borderLinks() const;
     WrapPolicy wrapPolicy() const;
+    const Display* displayById(const std::string& displayId) const;
+    std::optional<std::string> machineIdForDisplay(const std::string& displayId) const;
 
     std::vector<TopologyIssue> validate() const;
 
@@ -110,6 +117,18 @@ std::optional<TopologyPointerTransition> ResolveTopologyPointerTransition(
     const std::string& sourceDisplayId,
     int normalizedX,
     int normalizedY);
+
+std::optional<TopologyPointerTransition> ResolveTopologyPointerTransitionForMachine(
+    const TopologyModel& model,
+    const std::string& machineId,
+    int desktopWidth,
+    int desktopHeight,
+    int normalizedX,
+    int normalizedY);
+
+std::optional<TopologyNormalizedPoint> MapTransitionToTargetNormalizedPoint(
+    const TopologyModel& model,
+    const TopologyPointerTransition& transition);
 
 bool ParseTopologyConfig(std::string_view text, TopologyModel& outModel, std::string* errorMessage = nullptr);
 bool LoadTopologyConfig(const std::filesystem::path& path, TopologyModel& outModel, std::string* errorMessage = nullptr);

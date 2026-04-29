@@ -135,6 +135,14 @@ int mapNormalizedCoordinate(int normalized, int length) {
     return static_cast<int>(static_cast<long long>(clamped) * (length - 1) / 65535);
 }
 
+int normalizeCoordinate(int coordinate, int length) {
+    if (length <= 1) {
+        return 0;
+    }
+    const int clamped = std::clamp(coordinate, 0, length - 1);
+    return static_cast<int>(static_cast<long long>(clamped) * 65535 / (length - 1));
+}
+
 int rightOf(const Display& display) {
     return display.x + display.width;
 }
@@ -266,6 +274,18 @@ const std::vector<BorderLink>& TopologyModel::borderLinks() const {
 
 WrapPolicy TopologyModel::wrapPolicy() const {
     return wrapPolicy_;
+}
+
+const Display* TopologyModel::displayById(const std::string& displayId) const {
+    return findDisplay(displays_, displayId);
+}
+
+std::optional<std::string> TopologyModel::machineIdForDisplay(const std::string& displayId) const {
+    const Display* display = findDisplay(displays_, displayId);
+    if (display == nullptr) {
+        return std::nullopt;
+    }
+    return display->machineId;
 }
 
 std::vector<TopologyIssue> TopologyModel::validate() const {
@@ -577,6 +597,114 @@ std::optional<TopologyPointerTransition> ResolveTopologyPointerTransition(
         transition->entryEdge,
         transition->coordinate,
     };
+}
+
+std::optional<TopologyPointerTransition> ResolveTopologyPointerTransitionForMachine(
+    const TopologyModel& model,
+    const std::string& machineId,
+    int desktopWidth,
+    int desktopHeight,
+    int normalizedX,
+    int normalizedY) {
+    if (machineId.empty() ||
+        desktopWidth <= 0 ||
+        desktopHeight <= 0 ||
+        !isAbsolutePointerCoordinate(normalizedX) ||
+        !isAbsolutePointerCoordinate(normalizedY)) {
+        return std::nullopt;
+    }
+
+    std::optional<EdgeDirection> exitEdge;
+    if (normalizedX <= 0) {
+        exitEdge = EdgeDirection::Left;
+    } else if (normalizedX >= 65535) {
+        exitEdge = EdgeDirection::Right;
+    } else if (normalizedY <= 0) {
+        exitEdge = EdgeDirection::Up;
+    } else if (normalizedY >= 65535) {
+        exitEdge = EdgeDirection::Down;
+    } else {
+        return std::nullopt;
+    }
+
+    const int globalX = mapNormalizedCoordinate(normalizedX, desktopWidth);
+    const int globalY = mapNormalizedCoordinate(normalizedY, desktopHeight);
+
+    const Display* source = nullptr;
+    int edgeCoordinate = -1;
+    for (const auto& display : model.displays()) {
+        if (display.machineId != machineId) {
+            continue;
+        }
+
+        bool candidate = false;
+        int coordinate = -1;
+        switch (*exitEdge) {
+        case EdgeDirection::Left:
+            candidate = display.x == globalX && globalY >= display.y && globalY < bottomOf(display);
+            coordinate = globalY - display.y;
+            break;
+        case EdgeDirection::Right:
+            candidate = rightOf(display) - 1 == globalX && globalY >= display.y && globalY < bottomOf(display);
+            coordinate = globalY - display.y;
+            break;
+        case EdgeDirection::Up:
+            candidate = display.y == globalY && globalX >= display.x && globalX < rightOf(display);
+            coordinate = globalX - display.x;
+            break;
+        case EdgeDirection::Down:
+            candidate = bottomOf(display) - 1 == globalY && globalX >= display.x && globalX < rightOf(display);
+            coordinate = globalX - display.x;
+            break;
+        }
+
+        if (!candidate) {
+            continue;
+        }
+        if (source != nullptr) {
+            return std::nullopt;
+        }
+        source = &display;
+        edgeCoordinate = coordinate;
+    }
+
+    if (source == nullptr || edgeCoordinate < 0) {
+        return std::nullopt;
+    }
+
+    const auto transition = model.transitionFromEdge(source->id, *exitEdge, edgeCoordinate);
+    if (!transition.has_value()) {
+        return std::nullopt;
+    }
+
+    return TopologyPointerTransition{
+        source->id,
+        *exitEdge,
+        transition->targetDisplayId,
+        transition->entryEdge,
+        transition->coordinate,
+    };
+}
+
+std::optional<TopologyNormalizedPoint> MapTransitionToTargetNormalizedPoint(
+    const TopologyModel& model,
+    const TopologyPointerTransition& transition) {
+    const Display* target = model.displayById(transition.targetDisplayId);
+    if (target == nullptr) {
+        return std::nullopt;
+    }
+
+    switch (transition.entryEdge) {
+    case EdgeDirection::Left:
+        return TopologyNormalizedPoint{0, normalizeCoordinate(transition.coordinate, target->height)};
+    case EdgeDirection::Right:
+        return TopologyNormalizedPoint{65535, normalizeCoordinate(transition.coordinate, target->height)};
+    case EdgeDirection::Up:
+        return TopologyNormalizedPoint{normalizeCoordinate(transition.coordinate, target->width), 0};
+    case EdgeDirection::Down:
+        return TopologyNormalizedPoint{normalizeCoordinate(transition.coordinate, target->width), 65535};
+    }
+    return std::nullopt;
 }
 
 bool ParseTopologyConfig(std::string_view text, TopologyModel& outModel, std::string* errorMessage) {

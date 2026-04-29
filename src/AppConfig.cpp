@@ -451,7 +451,7 @@ std::string RenderSampleAppConfig() {
     out << "# Relative key_file paths resolve against the directory containing config.ini.\n";
     out << "# Set auto_connect_enabled=false to keep the service idle until you re-enable it.\n";
     out << "# Set screen_width and screen_height to your local desktop size when needed.\n";
-    out << "# Set topology_enabled=true and topology_file=... to preview runtime topology transitions.\n";
+    out << "# Set topology_enabled=true and topology_file=... to enable runtime topology handoff.\n";
     out << RenderAppConfig(sample);
     return out.str();
 }

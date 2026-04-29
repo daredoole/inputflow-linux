@@ -1081,6 +1081,14 @@ bool NetworkManager::SendPacket(MWBPacket& packet, bool isBig) {
         m_desId);
 }
 
+bool NetworkManager::SendMouse(const MouseData& mouse) {
+    MWBPacket packet;
+    std::memset(&packet, 0, sizeof(packet));
+    packet.type = static_cast<uint8_t>(PackageType::Mouse);
+    std::memcpy(packet.data, &mouse, sizeof(mouse));
+    return SendPacket(packet, false);
+}
+
 void NetworkManager::SendHello() {
     if (DebugSkipIdentityEnabled()) {
         if (DebugNetworkLoggingEnabled()) {

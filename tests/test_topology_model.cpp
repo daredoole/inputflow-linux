@@ -268,6 +268,57 @@ void TestPointerTransitionResolverUsesAbsoluteEdges() {
            "Non-edge absolute pointer move should not resolve transition");
 }
 
+void TestMachineScopedPointerResolverFindsDisplayAtDesktopEdge() {
+    mwb::TopologyModel model = BaseModel();
+    model.addDisplay({"A1", "A", 0, 0, 1920, 1080});
+    model.addDisplay({"A2", "A", 1920, 0, 1920, 1080});
+    model.addDisplay({"B1", "B", 0, 0, 1920, 1080});
+    model.addBorderLink({"A2", mwb::EdgeDirection::Right, "B1", mwb::EdgeDirection::Left});
+
+    const auto transition = mwb::ResolveTopologyPointerTransitionForMachine(
+        model,
+        "A",
+        3840,
+        1080,
+        65535,
+        32767);
+    Expect(transition.has_value(), "Machine-scoped resolver should use the local display at desktop edge");
+    if (transition.has_value()) {
+        ExpectEqual(transition->sourceDisplayId, "A2", "Machine-scoped resolver source display");
+        ExpectEqual(transition->targetDisplayId, "B1", "Machine-scoped resolver target display");
+    }
+}
+
+void TestMachineScopedPointerResolverRejectsUnlinkedEdges() {
+    mwb::TopologyModel model = BaseModel();
+    model.addDisplay({"A1", "A", 0, 0, 1920, 1080});
+    model.addDisplay({"B1", "B", 1920, 0, 1920, 1080});
+
+    const auto transition = mwb::ResolveTopologyPointerTransitionForMachine(
+        model,
+        "A",
+        1920,
+        1080,
+        65535,
+        32767);
+    Expect(!transition.has_value(), "Machine-scoped resolver should reject unlinked desktop edges");
+}
+
+void TestTargetNormalizedPointMapsEntryEdge() {
+    mwb::TopologyModel model = BaseModel();
+    model.addDisplay({"A1", "A", 0, 0, 1920, 1080});
+    model.addDisplay({"B1", "B", 0, 0, 2560, 1440});
+
+    const auto point = mwb::MapTransitionToTargetNormalizedPoint(
+        model,
+        {"A1", mwb::EdgeDirection::Right, "B1", mwb::EdgeDirection::Left, 720});
+    Expect(point.has_value(), "Handoff mapping should produce a normalized target point");
+    if (point.has_value()) {
+        ExpectEqual(point->x, 0, "Left-edge handoff should enter at normalized x=0");
+        ExpectEqual(point->y, 32790, "Target midpoint should be normalized for target display height");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -284,6 +335,9 @@ int main() {
     TestParseTopologyConfigAcceptsLineBasedFormat();
     TestParseTopologyConfigRejectsInvalidLines();
     TestPointerTransitionResolverUsesAbsoluteEdges();
+    TestMachineScopedPointerResolverFindsDisplayAtDesktopEdge();
+    TestMachineScopedPointerResolverRejectsUnlinkedEdges();
+    TestTargetNormalizedPointMapsEntryEdge();
 
     if (g_failures == 0) {
         std::cout << "Topology model tests passed." << std::endl;

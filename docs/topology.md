@@ -113,7 +113,7 @@ link=B1,left,A2,right
 
 `topology_enabled=false` is the default. Enabling topology loads and validates the topology file during startup. Invalid topology logs a warning and falls back to the existing behavior instead of blocking startup.
 
-The current runtime uses topology to resolve and log edge transitions for dry-run verification. It does not yet replace the protocol handoff path. This lets beta users validate AAB, BAA, ABA, stacked, asymmetric, and wrap layouts without changing remote-control behavior by default.
+The current runtime uses topology to resolve edge transitions before local mouse injection. Same-machine transitions stay local. Cross-machine transitions send a mapped MWB mouse move back to the active peer and suppress the local edge move, so the pointer can return to the Windows side on configured borders.
 
 ## Troubleshooting
 

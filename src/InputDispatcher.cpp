@@ -122,6 +122,18 @@ void InputDispatcher::SetTopologyPreview(std::shared_ptr<const TopologyModel> to
     m_topologyTraceEnabled = traceEnabled;
 }
 
+void InputDispatcher::SetTopologyHandoff(std::string localMachineId,
+                                         int desktopWidth,
+                                         int desktopHeight,
+                                         bool enabled,
+                                         TopologyHandoffCallback callback) {
+    m_topologyLocalMachineId = std::move(localMachineId);
+    m_topologyDesktopWidth = desktopWidth;
+    m_topologyDesktopHeight = desktopHeight;
+    m_topologyHandoffEnabled = enabled;
+    m_topologyHandoffCallback = std::move(callback);
+}
+
 void InputDispatcher::Enqueue(InputEvent event) {
     std::size_t queueDepth = 0;
     const auto enqueuedKind =
@@ -194,6 +206,21 @@ std::optional<TopologyPointerTransition> InputDispatcher::ResolveTopologyPreview
         return std::nullopt;
     }
 
+    if (!m_topologyLocalMachineId.empty() &&
+        m_topologyDesktopWidth > 0 &&
+        m_topologyDesktopHeight > 0) {
+        if (const auto transition = ResolveTopologyPointerTransitionForMachine(
+                *m_topology,
+                m_topologyLocalMachineId,
+                m_topologyDesktopWidth,
+                m_topologyDesktopHeight,
+                mouse.x,
+                mouse.y);
+            transition.has_value()) {
+            return transition;
+        }
+    }
+
     return ResolveTopologyPointerTransition(*m_topology, m_topologySourceDisplayId, mouse.x, mouse.y);
 }
 
@@ -202,11 +229,45 @@ void InputDispatcher::TraceTopologyPreviewTransition(const TopologyPointerTransi
         return;
     }
 
-    std::cout << "[TOPOLOGY] Dry-run transition "
+    std::cout << "[TOPOLOGY] Resolved transition "
               << transition.sourceDisplayId << "." << edgeDirectionName(transition.exitEdge)
               << " -> " << transition.targetDisplayId << "." << edgeDirectionName(transition.entryEdge)
-              << " coordinate=" << transition.coordinate
-              << " (input preserved)" << std::endl;
+              << " coordinate=" << transition.coordinate << std::endl;
+}
+
+bool InputDispatcher::TryEnforceTopologyHandoff(const MouseData& mouse, const TopologyPointerTransition& transition) {
+    if (!m_topologyHandoffEnabled || !m_topologyHandoffCallback || !m_topology) {
+        return false;
+    }
+
+    const auto sourceMachineId = m_topology->machineIdForDisplay(transition.sourceDisplayId);
+    const auto targetMachineId = m_topology->machineIdForDisplay(transition.targetDisplayId);
+    if (!sourceMachineId.has_value() ||
+        !targetMachineId.has_value() ||
+        *sourceMachineId == *targetMachineId ||
+        *targetMachineId == m_topologyLocalMachineId) {
+        return false;
+    }
+
+    const auto point = MapTransitionToTargetNormalizedPoint(*m_topology, transition);
+    if (!point.has_value()) {
+        return false;
+    }
+
+    MouseData handoffMouse = mouse;
+    handoffMouse.x = point->x;
+    handoffMouse.y = point->y;
+    if (!m_topologyHandoffCallback(handoffMouse, transition, *targetMachineId)) {
+        std::cerr << "WARN: Topology handoff to " << *targetMachineId << " failed; injecting locally." << std::endl;
+        return false;
+    }
+
+    std::cout << "[TOPOLOGY] Enforced handoff "
+              << transition.sourceDisplayId << "." << edgeDirectionName(transition.exitEdge)
+              << " -> " << transition.targetDisplayId << "." << edgeDirectionName(transition.entryEdge)
+              << " as mouse x=" << handoffMouse.x << " y=" << handoffMouse.y
+              << " targetMachine=" << *targetMachineId << std::endl;
+    return true;
 }
 
 void InputDispatcher::Run() {
@@ -226,6 +287,12 @@ void InputDispatcher::Run() {
         if (event.kind == InputEvent::Kind::Mouse) {
             if (const auto transition = ResolveTopologyPreviewTransition(event.mouse); transition.has_value()) {
                 TraceTopologyPreviewTransition(*transition);
+                if (TryEnforceTopologyHandoff(event.mouse, *transition)) {
+                    if (m_latencyStats) {
+                        m_latencyStats->RecordInjectDuration(kind, std::chrono::steady_clock::now() - dispatchStarted);
+                    }
+                    continue;
+                }
             }
             m_input.InjectMouse(event.mouse);
         } else {

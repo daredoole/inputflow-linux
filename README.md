@@ -105,7 +105,7 @@ User-facing beta operations:
 - [Health checks and diagnostics bundle](docs/beta-workflow.md#health-check)
 - [Connection quality and latency reporting](docs/beta-workflow.md#connection-quality)
 - [Packaging verification](docs/beta-workflow.md#packaging-verification)
-- [Topology config contract and layout wizard dry-run expectations](docs/topology.md)
+- [Topology config contract and layout wizard expectations](docs/topology.md)
 - [Migration from other keyboard/mouse sharing tools](docs/migration.md)
 - [Compatibility matrix and platform caveats](docs/compatibility.md)
 
@@ -118,7 +118,7 @@ This repository started as a fork of [chrischip/mwb-client-linux](https://github
 ### Configuration (`config.ini`)
 Supports `key_file`, `key_secret_id` (keyring), `screen_width/height` overrides, `topology_enabled`, `topology_file`, and more. Default path: `~/.config/mwb-client/config.ini`.
 
-Display-level topology is a separate opt-in preview contract. The default runtime remains MWB-compatible machine placement unless topology is explicitly enabled; see [docs/topology.md](docs/topology.md) for examples, wrap policies, and dry-run validation expectations.
+Display-level topology is a separate opt-in contract. The default runtime remains MWB-compatible machine placement unless topology is explicitly enabled; see [docs/topology.md](docs/topology.md) for examples, wrap policies, validation, and cross-machine handoff behavior.
 
 ### Screen Sizing
 The client detects screen size in this order:
