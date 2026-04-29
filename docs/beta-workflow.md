@@ -12,8 +12,9 @@ Use the desktop controller for the guided path:
 
 1. Open **Settings** and enter the Windows host IP, local machine name, port, and exactly one authentication source: inline key, `key_file`, or Secret Service key ID.
 2. Use **Connection Behavior** to choose automatic reconnect behavior before starting the service.
-3. Optionally run **Topology/Layout Wizard** before exporting if you want to draft a plain-language layout such as Linux left of Windows, Linux above Windows, Linux | Linux | Windows, Windows | Linux | Linux, Linux | Windows | Linux, or advanced/manual.
-4. Export a Windows helper from Linux when the UI exposes the action, or use the CLI fallback:
+3. For one Linux/Fedora monitor, leave topology disabled and use the normal PowerToys layout path.
+4. Optionally run **Advanced Topology/Layout** only if you have multiple Linux displays, stacked/asymmetric edges, wrap behavior, or wrong-edge handoff problems.
+5. Export a Windows helper from Linux when the UI exposes the action, or use the CLI fallback:
 
 ```bash
 ./build/mwb_client export-windows-pair \
@@ -32,15 +33,15 @@ Keep the exported `.ps1` private because it contains pairing material. Delete it
 
 ![Pairing helper walkthrough](screenshots/pairing-helper.svg)
 
-## Topology/Layout Wizard
+## Advanced Topology/Layout Wizard
 
-Open the wizard from the desktop controller:
+Open the wizard from the desktop controller only when the normal PowerToys layout is not enough:
 
 ```bash
 ./mwb-desktop-ui.sh layout-wizard
 ```
 
-The wizard asks for a plain-language layout, Linux/Windows machine names, display size, wrap policy, and output file name. It shows a preview of the exact topology file before making changes.
+The wizard asks for a plain-language layout, Linux/Windows machine names, display size, wrap policy, and output file name. It shows a preview of the exact topology file before making changes. For one Linux monitor, prefer **Use PowerToys Layout Only** instead.
 
 Only after confirmation, the wizard writes the topology file under `~/.config/mwb-client/` and updates `config.ini`:
 

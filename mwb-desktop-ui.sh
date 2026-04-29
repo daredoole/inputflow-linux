@@ -269,6 +269,31 @@ write_topology_config_keys() {
   mv "$tmp_path" "$CONFIG_PATH"
 }
 
+disable_topology_config() {
+  local tmp_path line line_key
+  local saw_enabled=false
+
+  mkdir -p "$(dirname "$CONFIG_PATH")"
+  tmp_path="$(mktemp "${CONFIG_PATH}.tmp.XXXXXX")"
+
+  if [[ -f "$CONFIG_PATH" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" =~ ^[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*= ]]; then
+        line_key="${BASH_REMATCH[1]}"
+        if [[ "$line_key" == "$TOPOLOGY_ENABLED_CONFIG_KEY" ]]; then
+          printf '%s=false\n' "$TOPOLOGY_ENABLED_CONFIG_KEY" >>"$tmp_path"
+          saw_enabled=true
+          continue
+        fi
+      fi
+      printf '%s\n' "$line" >>"$tmp_path"
+    done <"$CONFIG_PATH"
+  fi
+
+  [[ "$saw_enabled" == true ]] || printf '%s=false\n' "$TOPOLOGY_ENABLED_CONFIG_KEY" >>"$tmp_path"
+  mv "$tmp_path" "$CONFIG_PATH"
+}
+
 write_config() {
   local host="$1" key="$2" key_file="$3" secret_id="$4" machine_name="$5" port="$6" auto_connect_enabled="$7" reconnect_initial_backoff_ms="$8" reconnect_max_backoff_ms="$9" reconnect_idle_retry_ms="${10}" clipboard_enabled="${11}" clipboard_send_enabled="${12}" clipboard_force_poll="${13}" clipboard_poll_ms="${14}" screen_width="${15}" screen_height="${16}" mpris_media_keys_enabled="${17}" mpris_player="${18}" latency_report="${19}"
   local secret_key_name="${20:-$(detect_secret_id_key_name)}"
@@ -1103,9 +1128,10 @@ layout_wizard() {
   local preset preset_label machine_a machine_b display_width display_height wrap_policy file_name
   local fields values gui_output topology_dir topology_path topology_content preview_path manual_template
 
-  preset_label="$(zenity --list --title="$APP_NAME topology/layout wizard" --width=760 --height=390 \
-    --text="Pick the layout that matches your desk. Linux means this machine; Windows means the PowerToys peer. Keep this consistent with the Windows PowerToys machine layout." \
+  preset_label="$(zenity --list --title="$APP_NAME advanced topology/layout wizard" --width=820 --height=430 \
+    --text="Topology is optional. If this Fedora/Linux machine has one monitor, use PowerToys layout only and skip topology. Use topology only for multiple Linux displays, wrap, stacked/asymmetric layouts, or wrong-edge handoff problems." \
     --column="Layout" --column="Diagram" --column="Use when" \
+    "Use PowerToys layout only" "no topology file" "One Linux/Fedora monitor; normal MWB-style setup" \
     "Linux left, Windows right" "Linux | Windows" "One Linux display beside Windows" \
     "Linux above Windows" "Linux / Windows" "One display stacked above the other" \
     "Two Linux displays, then Windows" "Linux | Linux | Windows" "AAB: dual Linux monitors with Windows on the far right" \
@@ -1115,6 +1141,7 @@ layout_wizard() {
   [[ -n "$preset_label" ]] || return 1
 
   case "$preset_label" in
+    "Use PowerToys layout only") disable_topology; return $? ;;
     "Linux left, Windows right") preset="side-by-side" ;;
     "Linux above Windows") preset="stacked" ;;
     "Two Linux displays, then Windows") preset="AAB" ;;
@@ -1167,8 +1194,8 @@ layout_wizard() {
   fi
   rm -f "$preview_path"
 
-  if ! zenity --question --title="$APP_NAME topology/layout wizard" --width=620 \
-      --text="Apply this topology?\n\nWill write:\n$topology_path\n\nWill set:\n$TOPOLOGY_ENABLED_CONFIG_KEY=true\n$TOPOLOGY_FILE_CONFIG_KEY=$topology_path\n\nTopology will enforce configured cross-machine edge handoffs at runtime. Same-machine edges remain local."; then
+  if ! zenity --question --title="$APP_NAME advanced topology/layout wizard" --width=620 \
+      --text="Apply this advanced topology?\n\nFor one Linux monitor, cancel and use PowerToys layout only.\n\nWill write:\n$topology_path\n\nWill set:\n$TOPOLOGY_ENABLED_CONFIG_KEY=true\n$TOPOLOGY_FILE_CONFIG_KEY=$topology_path\n\nTopology will enforce configured cross-machine edge handoffs at runtime. Same-machine edges remain local."; then
     return 1
   fi
 
@@ -1177,6 +1204,17 @@ layout_wizard() {
   write_topology_config_keys "$topology_path"
   zenity --info --width=680 --text="Topology saved.\n\nFile: $topology_path\nConfig: $CONFIG_PATH\n\nWindows PowerToys still owns the Windows-side machine layout. Keep the PowerToys Linux/Windows machine position consistent with this topology."
   offer_service_restart_if_active "Topology settings updated."
+}
+
+disable_topology() {
+  if ! zenity --question --title="$APP_NAME topology" --width=620 \
+      --text="Use PowerToys layout only?\n\nThis disables InputFlow topology by setting:\n$TOPOLOGY_ENABLED_CONFIG_KEY=false\n\nThis is the recommended mode for a single Fedora/Linux monitor. PowerToys continues to decide the Linux/Windows machine placement."; then
+    return 1
+  fi
+
+  disable_topology_config
+  zenity --info --width=620 --text="Topology disabled.\n\nInputFlow will use the normal PowerToys/MWB-style machine layout path. No topology file is required for a single Linux monitor."
+  offer_service_restart_if_active "Topology disabled."
 }
 
 explain_topology() {
@@ -1190,24 +1228,26 @@ guided_pairing() {
   while true; do
     local choice
     choice="$(zenity --list --title="$APP_NAME guided pairing" --width=620 --height=390 \
-      --text="Use this flow to discover Windows, save Linux settings, export the Windows helper, then verify the setup." \
+      --text="Use this flow to discover Windows, save Linux settings, export the Windows helper, then verify the setup. Topology is optional; skip it for one Linux monitor." \
       --column="Step" \
       "1. Discover Windows peer and save settings" \
       "2. Edit settings manually" \
-      "3. Topology/layout wizard" \
-      "4. Explain current topology" \
-      "5. Export Windows helper" \
-      "6. Start service" \
-      "7. Run health check" \
+      "3. Export Windows helper" \
+      "4. Start service" \
+      "5. Run health check" \
+      "Optional: Advanced topology/layout" \
+      "Optional: Use PowerToys layout only" \
+      "Optional: Explain current topology" \
       "Back" || true)"
     case "$choice" in
       "1. Discover Windows peer and save settings") discover_and_save_peer ;;
       "2. Edit settings manually") edit_settings ;;
-      "3. Topology/layout wizard") layout_wizard ;;
-      "4. Explain current topology") explain_topology ;;
-      "5. Export Windows helper") export_windows_helper ;;
-      "6. Start service") start_session ;;
-      "7. Run health check") health_check ;;
+      "3. Export Windows helper") export_windows_helper ;;
+      "4. Start service") start_session ;;
+      "5. Run health check") health_check ;;
+      "Optional: Advanced topology/layout") layout_wizard ;;
+      "Optional: Use PowerToys layout only") disable_topology ;;
+      "Optional: Explain current topology") explain_topology ;;
       ""|"Back") return 0 ;;
     esac
   done
@@ -1429,7 +1469,7 @@ Terminal=false
 Categories=Utility;Network;
 Keywords=mouse;keyboard;sharing;input;controller;
 StartupNotify=false
-Actions=GuidedPairing;TopologyWizard;ExplainTopology;HealthCheck;DiagnosticsBundle;ConnectionQuality;OpenSettings;OpenConnectionBehavior;ShowTrayHelp;ShowStatus;StartService;RestartService;StopService;
+Actions=GuidedPairing;DisableTopology;TopologyWizard;ExplainTopology;HealthCheck;DiagnosticsBundle;ConnectionQuality;OpenSettings;OpenConnectionBehavior;ShowTrayHelp;ShowStatus;StartService;RestartService;StopService;
 
 [Desktop Action GuidedPairing]
 Name=Guided Pairing
@@ -1439,8 +1479,12 @@ Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") guided-pairing
 Name=Health Check
 Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") health-check
 
+[Desktop Action DisableTopology]
+Name=Use PowerToys Layout Only
+Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") disable-topology
+
 [Desktop Action TopologyWizard]
-Name=Topology/Layout Wizard
+Name=Advanced Topology/Layout
 Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") layout-wizard
 
 [Desktop Action ExplainTopology]
@@ -1511,7 +1555,8 @@ main_menu() {
     choice="$(zenity --list --title="$APP_NAME" --text="$(menu_summary_text)" --width=540 --height=430 \
       --column="Action" \
       "Guided Pairing" \
-      "Topology/Layout Wizard" \
+      "Use PowerToys Layout Only" \
+      "Advanced Topology/Layout" \
       "Explain Current Topology" \
       "Health Check" \
       "Diagnostics Bundle" \
@@ -1529,7 +1574,8 @@ main_menu() {
 
     case "$choice" in
       "Guided Pairing") guided_pairing ;;
-      "Topology/Layout Wizard") layout_wizard ;;
+      "Use PowerToys Layout Only") disable_topology ;;
+      "Advanced Topology/Layout") layout_wizard ;;
       "Explain Current Topology") explain_topology ;;
       "Health Check") health_check ;;
       "Diagnostics Bundle") diagnostics_bundle ;;
@@ -1559,6 +1605,7 @@ require_ui
 case "${1:-menu}" in
   ""|menu) main_menu ;;
   guided-pairing|pairing|export-helper) guided_pairing ;;
+  disable-topology|powertoys-layout-only|simple-layout) disable_topology ;;
   layout-wizard|topology-wizard|topology|layout) layout_wizard ;;
   explain-topology|topology-explain) explain_topology ;;
   health-check|doctor) health_check ;;
@@ -1576,7 +1623,7 @@ case "${1:-menu}" in
   tray) start_tray ;;
   install-desktop-entry|install-desktop-entries) install_desktop_entry ;;
   help|-h|--help)
-    printf 'Usage: %s [menu|guided-pairing|layout-wizard|explain-topology|health-check|diagnostics-bundle|connection-quality|settings|connection|discover|peers|tray-help|status|start|restart|stop|tray|install-desktop-entry]\n' "$(basename "${BASH_SOURCE[0]}")"
+    printf 'Usage: %s [menu|guided-pairing|disable-topology|layout-wizard|explain-topology|health-check|diagnostics-bundle|connection-quality|settings|connection|discover|peers|tray-help|status|start|restart|stop|tray|install-desktop-entry]\n' "$(basename "${BASH_SOURCE[0]}")"
     ;;
   *)
     zenity --error --text="Unknown action: $1"

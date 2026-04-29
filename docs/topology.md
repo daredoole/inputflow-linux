@@ -4,12 +4,24 @@ InputFlow topology files describe machines, their individual displays, explicit 
 
 This is additive to the beta flow. If topology is disabled, missing, or invalid, InputFlow keeps the existing single-screen runtime behavior.
 
-## Simple Setup
+## Normal Single-Monitor Setup
 
-Use the tray/controller unless you have a weird layout:
+Do not use topology for a normal one-monitor Linux/Fedora setup. Keep `topology_enabled=false` and let Windows PowerToys Mouse Without Borders own the Linux/Windows machine placement.
+
+Use the controller action **Use PowerToys Layout Only** if you enabled topology while testing and want to return to the simple path.
+
+CLI equivalent:
+
+```bash
+./mwb-desktop-ui.sh disable-topology
+```
+
+## Advanced Topology Setup
+
+Use topology only when the normal PowerToys-style machine layout is not enough:
 
 1. Open **InputFlow Controller**.
-2. Click **Topology/Layout Wizard**.
+2. Click **Advanced Topology/Layout**.
 3. Pick the layout that matches your desk:
    - **Linux left, Windows right**: one Linux display beside Windows.
    - **Linux above Windows**: one display stacked above the other.

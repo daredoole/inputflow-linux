@@ -15,15 +15,14 @@ Recommended first-run flow for most users:
 2. **Launch Setup UI:** Run `./mwb-desktop-ui.sh menu`
 3. **Configure:**
    - Go to **Settings** -> Enter your Windows Host IP and Security Key.
-4. **Choose layout (optional):**
-   - Open **Topology/Layout Wizard** for side-by-side, stacked, AAB, BAA, ABA, or asymmetric/manual presets.
-   - Prefer the plain-language choices: `Linux left, Windows right`, `Linux above Windows`, `Linux | Linux | Windows`, `Windows | Linux | Linux`, or `Linux | Windows | Linux`.
-   - Confirm the preview to write `~/.config/mwb-client/*.topology` and enable `topology_file`/`topology_enabled`.
-   - Use **Explain Current Topology** or `mwb_client topology explain --config ~/.config/mwb-client/config.ini` to verify the English explanation matches your desk.
+4. **Use PowerToys layout for normal setups:**
+   - If this Linux/Fedora machine has one monitor, do not configure topology. Let Windows PowerToys Mouse Without Borders own the Linux/Windows machine placement.
+   - If topology was enabled while testing, choose **Use PowerToys Layout Only** to set `topology_enabled=false`.
 5. **Pair with Windows:**
    - In the same UI, use the **Export Helper** option.
    - Run the exported `.ps1` script on your Windows machine to register the Linux peer.
 6. **Start:** Choose **Start Service** or launch the tray with `./build/mwb_tray`.
+7. **Advanced layouts only:** Open **Advanced Topology/Layout** if you have multiple Linux monitors, stacked/asymmetric edges, wrap behavior, or wrong-edge handoff problems.
 
 For the full beta setup, health-check, diagnostics, connection-quality, and packaging-verification workflow, see [docs/beta-workflow.md](docs/beta-workflow.md).
 
