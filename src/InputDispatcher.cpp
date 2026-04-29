@@ -1,6 +1,7 @@
 #include "InputDispatcher.h"
 
 #include <algorithm>
+#include <iostream>
 #include <optional>
 
 namespace mwb {
@@ -113,6 +114,14 @@ void InputDispatcher::SubmitKeyboard(const KeyboardData& keyboard) {
     });
 }
 
+void InputDispatcher::SetTopologyPreview(std::shared_ptr<const TopologyModel> topology,
+                                         std::string sourceDisplayId,
+                                         bool traceEnabled) {
+    m_topology = std::move(topology);
+    m_topologySourceDisplayId = std::move(sourceDisplayId);
+    m_topologyTraceEnabled = traceEnabled;
+}
+
 void InputDispatcher::Enqueue(InputEvent event) {
     std::size_t queueDepth = 0;
     const auto enqueuedKind =
@@ -180,6 +189,26 @@ bool InputDispatcher::PopNext(InputEvent& event) {
     return true;
 }
 
+std::optional<TopologyPointerTransition> InputDispatcher::ResolveTopologyPreviewTransition(const MouseData& mouse) const {
+    if (!m_topology || m_topologySourceDisplayId.empty() || mouse.wParam != 0x0200 || IsRelativeMouseMove(mouse)) {
+        return std::nullopt;
+    }
+
+    return ResolveTopologyPointerTransition(*m_topology, m_topologySourceDisplayId, mouse.x, mouse.y);
+}
+
+void InputDispatcher::TraceTopologyPreviewTransition(const TopologyPointerTransition& transition) const {
+    if (!m_topologyTraceEnabled) {
+        return;
+    }
+
+    std::cout << "[TOPOLOGY] Dry-run transition "
+              << transition.sourceDisplayId << "." << edgeDirectionName(transition.exitEdge)
+              << " -> " << transition.targetDisplayId << "." << edgeDirectionName(transition.entryEdge)
+              << " coordinate=" << transition.coordinate
+              << " (input preserved)" << std::endl;
+}
+
 void InputDispatcher::Run() {
     while (true) {
         InputEvent event{};
@@ -195,6 +224,9 @@ void InputDispatcher::Run() {
         }
 
         if (event.kind == InputEvent::Kind::Mouse) {
+            if (const auto transition = ResolveTopologyPreviewTransition(event.mouse); transition.has_value()) {
+                TraceTopologyPreviewTransition(*transition);
+            }
             m_input.InjectMouse(event.mouse);
         } else {
             m_input.InjectKeyboard(event.keyboard);

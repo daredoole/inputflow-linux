@@ -51,6 +51,8 @@ void TestAppConfigRoundTrip() {
     config.mprisMediaKeysEnabled = false;
     config.mprisPlayer = "spotify";
     config.latencyReport = true;
+    config.topologyRuntimeEnabled = true;
+    config.topologyFile = "topology.conf";
 
     const std::filesystem::path path = MakeTempPath("mwb-config-test.ini");
     std::string error;
@@ -74,6 +76,10 @@ void TestAppConfigRoundTrip() {
                        "Rendered config should keep mpris_player");
     ExpectRenderedLine(rendered, "latency_report", "true",
                        "Rendered config should keep latency_report");
+    ExpectRenderedLine(rendered, "topology_enabled", "true",
+                       "Rendered config should keep topology_enabled");
+    ExpectRenderedLine(rendered, "topology_file", "topology.conf",
+                       "Rendered config should keep topology_file");
 
     mwb::AppConfig loaded;
     Expect(mwb::LoadConfigFile(path, loaded, error), "LoadConfigFile should succeed");
@@ -99,6 +105,10 @@ void TestAppConfigRoundTrip() {
                        "Loaded config should keep mpris_player");
     ExpectRenderedLine(loadedRendered, "latency_report", "true",
                        "Loaded config should keep latency_report");
+    ExpectRenderedLine(loadedRendered, "topology_enabled", "true",
+                       "Loaded config should keep topology_enabled");
+    ExpectRenderedLine(loadedRendered, "topology_file", "topology.conf",
+                       "Loaded config should keep topology_file");
     Expect(loaded.machineName == config.machineName, "Config machine_name round-trip");
     Expect(loaded.port == config.port, "Config port round-trip");
     Expect(loaded.autoConnectEnabled == config.autoConnectEnabled, "Config autoConnectEnabled round-trip");
@@ -118,6 +128,8 @@ void TestAppConfigRoundTrip() {
            "Config mprisMediaKeysEnabled round-trip");
     Expect(loaded.mprisPlayer == config.mprisPlayer, "Config mprisPlayer round-trip");
     Expect(loaded.latencyReport == config.latencyReport, "Config latencyReport round-trip");
+    Expect(loaded.topologyRuntimeEnabled == config.topologyRuntimeEnabled, "Config topologyRuntimeEnabled round-trip");
+    Expect(loaded.topologyFile == config.topologyFile, "Config topologyFile round-trip");
     std::error_code ignore;
     std::filesystem::remove(path, ignore);
 }

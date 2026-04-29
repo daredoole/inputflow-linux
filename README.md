@@ -15,10 +15,13 @@ Recommended first-run flow for most users:
 2. **Launch Setup UI:** Run `./mwb-desktop-ui.sh menu`
 3. **Configure:**
    - Go to **Settings** -> Enter your Windows Host IP and Security Key.
-4. **Pair with Windows:**
+4. **Choose layout (optional):**
+   - Open **Topology/Layout Wizard** for side-by-side, stacked, AAB, BAA, ABA, or asymmetric/manual presets.
+   - Confirm the dry-run preview to write `~/.config/mwb-client/*.topology` and enable `topology_file`/`topology_enabled`.
+5. **Pair with Windows:**
    - In the same UI, use the **Export Helper** option.
    - Run the exported `.ps1` script on your Windows machine to register the Linux peer.
-5. **Start:** Choose **Start Service** or launch the tray with `./build/mwb_tray`.
+6. **Start:** Choose **Start Service** or launch the tray with `./build/mwb_tray`.
 
 For the full beta setup, health-check, diagnostics, connection-quality, and packaging-verification workflow, see [docs/beta-workflow.md](docs/beta-workflow.md).
 
@@ -98,9 +101,11 @@ See the full [documentation section](#detailed-documentation) for environment va
 User-facing beta operations:
 
 - [Guided Windows pairing and export helper](docs/beta-workflow.md#guided-pairing-and-export-helper)
+- [Topology/layout wizard](docs/beta-workflow.md#topologylayout-wizard)
 - [Health checks and diagnostics bundle](docs/beta-workflow.md#health-check)
 - [Connection quality and latency reporting](docs/beta-workflow.md#connection-quality)
 - [Packaging verification](docs/beta-workflow.md#packaging-verification)
+- [Topology config contract and layout wizard dry-run expectations](docs/topology.md)
 - [Migration from other keyboard/mouse sharing tools](docs/migration.md)
 - [Compatibility matrix and platform caveats](docs/compatibility.md)
 
@@ -111,7 +116,9 @@ User-facing beta operations:
 This repository started as a fork of [chrischip/mwb-client-linux](https://github.com/chrischip/mwb-client-linux) and has been substantially expanded with service management, rich clipboard support, and recovery tooling.
 
 ### Configuration (`config.ini`)
-Supports `key_file`, `key_secret_id` (keyring), `screen_width/height` overrides, and more. Default path: `~/.config/mwb-client/config.ini`.
+Supports `key_file`, `key_secret_id` (keyring), `screen_width/height` overrides, `topology_enabled`, `topology_file`, and more. Default path: `~/.config/mwb-client/config.ini`.
+
+Display-level topology is a separate opt-in preview contract. The default runtime remains MWB-compatible machine placement unless topology is explicitly enabled; see [docs/topology.md](docs/topology.md) for examples, wrap policies, and dry-run validation expectations.
 
 ### Screen Sizing
 The client detects screen size in this order:

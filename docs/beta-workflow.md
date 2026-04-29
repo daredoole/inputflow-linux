@@ -12,7 +12,8 @@ Use the desktop controller for the guided path:
 
 1. Open **Settings** and enter the Windows host IP, local machine name, port, and exactly one authentication source: inline key, `key_file`, or Secret Service key ID.
 2. Use **Connection Behavior** to choose automatic reconnect behavior before starting the service.
-3. Export a Windows helper from Linux when the UI exposes the action, or use the CLI fallback:
+3. Optionally run **Topology/Layout Wizard** before exporting if you want to draft a side-by-side, stacked, AAB, BAA, ABA, or asymmetric/manual layout.
+4. Export a Windows helper from Linux when the UI exposes the action, or use the CLI fallback:
 
 ```bash
 ./build/mwb_client export-windows-pair \
@@ -30,6 +31,25 @@ powershell -ExecutionPolicy Bypass -File .\inputflow-windows-pair.ps1
 Keep the exported `.ps1` private because it contains pairing material. Delete it after confirming Windows sees the Linux peer.
 
 ![Pairing helper walkthrough](screenshots/pairing-helper.svg)
+
+## Topology/Layout Wizard
+
+Open the wizard from the desktop controller:
+
+```bash
+./mwb-desktop-ui.sh layout-wizard
+```
+
+The wizard asks for a preset, machine labels, display size, wrap policy, and output file name. It shows a dry-run preview of the exact topology file before making changes.
+
+Only after confirmation, the wizard writes the topology file under `~/.config/mwb-client/` and updates `config.ini`:
+
+```ini
+topology_enabled=true
+topology_file=/home/example/.config/mwb-client/topology-side-by-side.topology
+```
+
+Current limitation: the topology file is saved for topology-aware runtime builds, but runtime handoff is still resolver/trace-gated. Verify behavior with PowerToys MWB and the exported helper until direct cross-machine handoff enforcement lands.
 
 ## Health Check
 

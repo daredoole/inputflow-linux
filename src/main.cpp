@@ -1168,6 +1168,8 @@ int RunClient(const mwb::AppConfig& config,
     options.debugKeyLogging = IsTruthyEnv("MWB_DEBUG_KEYS");
     options.debugShortcutLogging = IsTruthyEnv("MWB_DEBUG_SHORTCUTS");
     options.latencyReport = runtimeConfig.latencyReport;
+    options.topologyRuntimeEnabled = runtimeConfig.topologyRuntimeEnabled;
+    options.topologyFilePath = runtimeConfig.topologyFile;
     options.onSessionEstablished = [&](const std::string& host, int port, const std::string& remoteName, uint32_t, uint32_t localMachineId) {
         std::lock_guard<std::mutex> lock(stateMutex);
         mwb::MarkSessionEstablished(state, host, port, remoteName, localMachineId, CurrentEpochSeconds());

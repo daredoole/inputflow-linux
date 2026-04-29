@@ -1,9 +1,13 @@
 #include "TopologyModel.h"
 
 #include <algorithm>
+#include <cctype>
+#include <fstream>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
+#include <utility>
 
 namespace mwb {
 namespace {
@@ -19,6 +23,117 @@ struct EdgeKey {
         return static_cast<int>(edge) < static_cast<int>(other.edge);
     }
 };
+
+std::string_view trim(std::string_view value) {
+    size_t start = 0;
+    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
+        ++start;
+    }
+
+    size_t end = value.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+        --end;
+    }
+
+    return value.substr(start, end - start);
+}
+
+std::string toLower(std::string_view value) {
+    std::string lowered;
+    lowered.reserve(value.size());
+    for (const char ch : value) {
+        lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    }
+    return lowered;
+}
+
+void setError(std::string* errorMessage, std::string message) {
+    if (errorMessage != nullptr) {
+        *errorMessage = std::move(message);
+    }
+}
+
+std::vector<std::string> splitCommaList(std::string_view value) {
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (start <= value.size()) {
+        const size_t comma = value.find(',', start);
+        const size_t end = (comma == std::string_view::npos) ? value.size() : comma;
+        parts.emplace_back(trim(value.substr(start, end - start)));
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+    return parts;
+}
+
+bool parseInt(std::string_view value, int& out) {
+    const std::string text(trim(value));
+    if (text.empty()) {
+        return false;
+    }
+
+    try {
+        size_t end = 0;
+        const long long parsed = std::stoll(text, &end, 10);
+        if (end != text.size() ||
+            parsed < std::numeric_limits<int>::min() ||
+            parsed > std::numeric_limits<int>::max()) {
+            return false;
+        }
+        out = static_cast<int>(parsed);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+std::optional<EdgeDirection> parseEdgeDirection(std::string_view value) {
+    const std::string lowered = toLower(trim(value));
+    if (lowered == "left") {
+        return EdgeDirection::Left;
+    }
+    if (lowered == "right") {
+        return EdgeDirection::Right;
+    }
+    if (lowered == "up") {
+        return EdgeDirection::Up;
+    }
+    if (lowered == "down") {
+        return EdgeDirection::Down;
+    }
+    return std::nullopt;
+}
+
+std::optional<WrapPolicy> parseWrapPolicy(std::string_view value) {
+    const std::string lowered = toLower(trim(value));
+    if (lowered == "none") {
+        return WrapPolicy::None;
+    }
+    if (lowered == "horizontal") {
+        return WrapPolicy::Horizontal;
+    }
+    if (lowered == "vertical") {
+        return WrapPolicy::Vertical;
+    }
+    if (lowered == "both") {
+        return WrapPolicy::Both;
+    }
+    return std::nullopt;
+}
+
+bool isAbsolutePointerCoordinate(int value) {
+    return value >= 0 && value <= 65535;
+}
+
+int mapNormalizedCoordinate(int normalized, int length) {
+    if (length <= 1) {
+        return 0;
+    }
+    const int clamped = std::clamp(normalized, 0, 65535);
+    return static_cast<int>(static_cast<long long>(clamped) * (length - 1) / 65535);
+}
 
 int rightOf(const Display& display) {
     return display.x + display.width;
@@ -416,6 +531,163 @@ const char* topologyIssueCodeName(TopologyIssueCode code) {
         return "ambiguous-edge-mapping";
     }
     return "unknown";
+}
+
+std::optional<TopologyPointerTransition> ResolveTopologyPointerTransition(
+    const TopologyModel& model,
+    const std::string& sourceDisplayId,
+    int normalizedX,
+    int normalizedY) {
+    const Display* source = findDisplay(model.displays(), sourceDisplayId);
+    if (source == nullptr ||
+        !isAbsolutePointerCoordinate(normalizedX) ||
+        !isAbsolutePointerCoordinate(normalizedY)) {
+        return std::nullopt;
+    }
+
+    std::optional<EdgeDirection> exitEdge;
+    int coordinate = 0;
+    if (normalizedX <= 0) {
+        exitEdge = EdgeDirection::Left;
+        coordinate = mapNormalizedCoordinate(normalizedY, source->height);
+    } else if (normalizedX >= 65535) {
+        exitEdge = EdgeDirection::Right;
+        coordinate = mapNormalizedCoordinate(normalizedY, source->height);
+    } else if (normalizedY <= 0) {
+        exitEdge = EdgeDirection::Up;
+        coordinate = mapNormalizedCoordinate(normalizedX, source->width);
+    } else if (normalizedY >= 65535) {
+        exitEdge = EdgeDirection::Down;
+        coordinate = mapNormalizedCoordinate(normalizedX, source->width);
+    }
+
+    if (!exitEdge.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto transition = model.transitionFromEdge(sourceDisplayId, *exitEdge, coordinate);
+    if (!transition.has_value()) {
+        return std::nullopt;
+    }
+
+    return TopologyPointerTransition{
+        sourceDisplayId,
+        *exitEdge,
+        transition->targetDisplayId,
+        transition->entryEdge,
+        transition->coordinate,
+    };
+}
+
+bool ParseTopologyConfig(std::string_view text, TopologyModel& outModel, std::string* errorMessage) {
+    TopologyModel parsed;
+    std::istringstream stream{std::string(text)};
+    std::string line;
+    size_t lineNumber = 0;
+
+    while (std::getline(stream, line)) {
+        ++lineNumber;
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+
+        std::string_view trimmed = trim(line);
+        if (trimmed.empty() || trimmed.front() == '#' || trimmed.front() == ';') {
+            continue;
+        }
+
+        const size_t separator = trimmed.find('=');
+        if (separator == std::string_view::npos) {
+            setError(errorMessage, "Topology line " + std::to_string(lineNumber) + " is missing '='.");
+            return false;
+        }
+
+        const std::string key(toLower(trim(trimmed.substr(0, separator))));
+        const std::string_view value = trim(trimmed.substr(separator + 1));
+        if (key.empty()) {
+            setError(errorMessage, "Topology line " + std::to_string(lineNumber) + " has an empty key.");
+            return false;
+        }
+
+        if (key == "machine") {
+            if (value.empty()) {
+                setError(errorMessage, "Topology line " + std::to_string(lineNumber) + " has an empty machine id.");
+                return false;
+            }
+            parsed.addMachine({std::string(value)});
+            continue;
+        }
+
+        if (key == "display") {
+            const auto parts = splitCommaList(value);
+            if (parts.size() != 6) {
+                setError(errorMessage, "Topology line " + std::to_string(lineNumber) + " display expects ID,MACHINE,X,Y,W,H.");
+                return false;
+            }
+            int x = 0;
+            int y = 0;
+            int width = 0;
+            int height = 0;
+            if (parts[0].empty() || parts[1].empty() ||
+                !parseInt(parts[2], x) || !parseInt(parts[3], y) ||
+                !parseInt(parts[4], width) || !parseInt(parts[5], height) ||
+                width <= 0 || height <= 0) {
+                setError(errorMessage, "Topology line " + std::to_string(lineNumber) + " has an invalid display.");
+                return false;
+            }
+            parsed.addDisplay({parts[0], parts[1], x, y, width, height});
+            continue;
+        }
+
+        if (key == "link") {
+            const auto parts = splitCommaList(value);
+            if (parts.size() != 4) {
+                setError(errorMessage, "Topology line " + std::to_string(lineNumber) + " link expects SRC,EDGE,TGT,ENTRY.");
+                return false;
+            }
+            const auto exitEdge = parseEdgeDirection(parts[1]);
+            const auto entryEdge = parseEdgeDirection(parts[3]);
+            if (parts[0].empty() || parts[2].empty() || !exitEdge.has_value() || !entryEdge.has_value()) {
+                setError(errorMessage, "Topology line " + std::to_string(lineNumber) + " has an invalid link.");
+                return false;
+            }
+            parsed.addBorderLink({parts[0], *exitEdge, parts[2], *entryEdge});
+            continue;
+        }
+
+        if (key == "wrap") {
+            const auto policy = parseWrapPolicy(value);
+            if (!policy.has_value()) {
+                setError(errorMessage, "Topology line " + std::to_string(lineNumber) + " wrap expects none, horizontal, vertical, or both.");
+                return false;
+            }
+            parsed.setWrapPolicy(*policy);
+            continue;
+        }
+
+        setError(errorMessage, "Unknown topology key '" + key + "' on line " + std::to_string(lineNumber) + ".");
+        return false;
+    }
+
+    outModel = std::move(parsed);
+    return true;
+}
+
+bool LoadTopologyConfig(const std::filesystem::path& path, TopologyModel& outModel, std::string* errorMessage) {
+    std::ifstream file(path);
+    if (!file) {
+        setError(errorMessage, "Failed to open topology file: " + path.string());
+        return false;
+    }
+
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    if (!file.good() && !file.eof()) {
+        setError(errorMessage, "Failed to read topology file: " + path.string());
+        return false;
+    }
+
+    return ParseTopologyConfig(buffer.str(), outModel, errorMessage);
 }
 
 } // namespace mwb

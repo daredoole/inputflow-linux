@@ -52,6 +52,35 @@ std::optional<std::pair<int, int>> ParseMode(const std::string& mode) {
     return std::pair<int, int>{*width, *height};
 }
 
+std::string SelectTopologySourceDisplay(const TopologyModel& topology,
+                                        const std::string& localMachineName,
+                                        const ClientRuntime::ScreenSize& screenSize) {
+    const Display* firstLocal = nullptr;
+    const Display* firstAny = nullptr;
+
+    for (const auto& display : topology.displays()) {
+        if (firstAny == nullptr) {
+            firstAny = &display;
+        }
+        if (!localMachineName.empty() && display.machineId == localMachineName) {
+            if (display.width == screenSize.width && display.height == screenSize.height) {
+                return display.id;
+            }
+            if (firstLocal == nullptr) {
+                firstLocal = &display;
+            }
+        }
+    }
+
+    if (firstLocal != nullptr) {
+        return firstLocal->id;
+    }
+    if (localMachineName.empty() && firstAny != nullptr) {
+        return firstAny->id;
+    }
+    return {};
+}
+
 std::optional<ClientRuntime::ScreenSize> ReadScreenSizeFromDrm() {
     namespace fs = std::filesystem;
 
@@ -249,6 +278,54 @@ ClientRuntime::ScreenSize ClientRuntime::DetectScreenSize() const {
     return ScreenSize{kFallbackScreenWidth, kFallbackScreenHeight, ScreenSize::Source::Fallback};
 }
 
+void ClientRuntime::ConfigureTopologyPreview(const ScreenSize& screenSize) {
+    m_dispatcher.SetTopologyPreview(nullptr, {}, false);
+    m_topology.reset();
+
+    if (!m_options.topologyRuntimeEnabled) {
+        return;
+    }
+
+    if (m_options.topologyFilePath.empty()) {
+        std::cerr << "WARN: Topology runtime enabled but topology_file is empty; using default pointer behavior." << std::endl;
+        return;
+    }
+
+    TopologyModel loaded;
+    std::string error;
+    if (!LoadTopologyConfig(m_options.topologyFilePath, loaded, &error)) {
+        std::cerr << "WARN: Failed to load topology config '" << m_options.topologyFilePath.string()
+                  << "': " << error << "; using default pointer behavior." << std::endl;
+        return;
+    }
+
+    const auto issues = loaded.validate();
+    if (!issues.empty()) {
+        std::cerr << "WARN: Invalid topology config '" << m_options.topologyFilePath.string()
+                  << "': " << topologyIssueCodeName(issues.front().code)
+                  << ": " << issues.front().message
+                  << "; using default pointer behavior." << std::endl;
+        return;
+    }
+
+    const std::string sourceDisplayId = SelectTopologySourceDisplay(
+        loaded,
+        m_options.localMachineName,
+        screenSize);
+    if (sourceDisplayId.empty()) {
+        std::cerr << "WARN: Topology config '" << m_options.topologyFilePath.string()
+                  << "' has no display for local machine '" << m_options.localMachineName
+                  << "'; using default pointer behavior." << std::endl;
+        return;
+    }
+
+    m_topology = std::make_shared<TopologyModel>(std::move(loaded));
+    m_dispatcher.SetTopologyPreview(m_topology, sourceDisplayId, true);
+    std::cout << "[TOPOLOGY] Loaded dry-run topology preview from "
+              << m_options.topologyFilePath.string()
+              << " using source display " << sourceDisplayId << "." << std::endl;
+}
+
 int ClientRuntime::Run() {
     const ScreenSize screenSize = DetectScreenSize();
     if (screenSize.source == ScreenSize::Source::Fallback) {
@@ -278,6 +355,7 @@ int ClientRuntime::Run() {
     if (!m_input.Initialize()) {
         std::cerr << "WARN: Virtual input initialization failed. Networking will continue, but local mouse/keyboard injection is disabled until /dev/uinput is accessible." << std::endl;
     }
+    ConfigureTopologyPreview(screenSize);
     m_dispatcher.Start();
 
     m_network = std::make_unique<NetworkManager>(m_options.host, m_options.port, m_options.key);

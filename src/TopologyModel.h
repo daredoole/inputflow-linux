@@ -1,7 +1,9 @@
 #pragma once
 
+#include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace mwb {
@@ -41,6 +43,14 @@ struct BorderLink {
 };
 
 struct TransitionResult {
+    std::string targetDisplayId;
+    EdgeDirection entryEdge{EdgeDirection::Left};
+    int coordinate{0};
+};
+
+struct TopologyPointerTransition {
+    std::string sourceDisplayId;
+    EdgeDirection exitEdge{EdgeDirection::Right};
     std::string targetDisplayId;
     EdgeDirection entryEdge{EdgeDirection::Left};
     int coordinate{0};
@@ -94,5 +104,14 @@ private:
 EdgeDirection oppositeEdge(EdgeDirection direction);
 const char* edgeDirectionName(EdgeDirection direction);
 const char* topologyIssueCodeName(TopologyIssueCode code);
+
+std::optional<TopologyPointerTransition> ResolveTopologyPointerTransition(
+    const TopologyModel& model,
+    const std::string& sourceDisplayId,
+    int normalizedX,
+    int normalizedY);
+
+bool ParseTopologyConfig(std::string_view text, TopologyModel& outModel, std::string* errorMessage = nullptr);
+bool LoadTopologyConfig(const std::filesystem::path& path, TopologyModel& outModel, std::string* errorMessage = nullptr);
 
 } // namespace mwb
