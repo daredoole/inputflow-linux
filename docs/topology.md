@@ -1,8 +1,44 @@
 # Topology Files
 
-InputFlow topology files describe machines, their individual displays, explicit border links, and optional wrap fallback. The current runtime consumes these files only when `topology_enabled=true` and `topology_file=...` are set in `config.ini`.
+InputFlow topology files describe machines, their individual displays, explicit border links, and optional wrap fallback. The runtime consumes these files only when `topology_enabled=true` and `topology_file=...` are set in `config.ini`.
 
 This is additive to the beta flow. If topology is disabled, missing, or invalid, InputFlow keeps the existing single-screen runtime behavior.
+
+## Simple Setup
+
+Use the tray/controller unless you have a weird layout:
+
+1. Open **InputFlow Controller**.
+2. Click **Topology/Layout Wizard**.
+3. Pick the layout that matches your desk:
+   - **Linux left, Windows right**: one Linux display beside Windows.
+   - **Linux above Windows**: one display stacked above the other.
+   - **Two Linux displays, then Windows**: Linux | Linux | Windows.
+   - **Windows, then two Linux displays**: Windows | Linux | Linux.
+   - **Linux split around Windows**: Linux | Windows | Linux.
+   - **Advanced/manual topology**: asymmetric or unusual layouts.
+4. Confirm the preview.
+5. Click **Explain Current Topology** and confirm the English explanation matches your desk.
+6. Restart the InputFlow service when prompted.
+
+CLI equivalent:
+
+```bash
+mwb_client topology explain --config ~/.config/mwb-client/config.ini
+```
+
+## PowerToys Layout Interaction
+
+Windows PowerToys Mouse Without Borders still owns the Windows-side machine layout. InputFlow topology does not rewrite PowerToys `settings.json` or per-display geometry on Windows.
+
+Keep both sides consistent:
+
+- Use **export-windows-pair** or the Windows helper to place the Linux machine next to Windows at the MWB machine level.
+- Use InputFlow topology to describe the Linux-side displays and the exact Linux edge that returns control to Windows.
+- If PowerToys says Linux is left of Windows, do not make the Linux topology return to Windows from an unrelated edge.
+- If these disagree, cursor movement will feel wrong because Windows and Linux will be making different assumptions.
+
+Mental model: PowerToys decides **which machines are neighbors**. InputFlow topology decides **which Linux display edge performs the handoff**.
 
 ## Format
 

@@ -1,6 +1,7 @@
 # Build artifacts
 build/
 build-*/
+.rpmbuild-local/
 
 # Working/research files not for public release
 gemini/

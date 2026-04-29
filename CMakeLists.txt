@@ -200,6 +200,9 @@ if (BUILD_TESTING)
     add_test(NAME mwb_clipboard_socket_security_tests COMMAND mwb_clipboard_socket_security_tests)
     add_test(NAME mwb_client_help COMMAND mwb_client --help)
     add_test(NAME mwb_client_doctor COMMAND mwb_client doctor --config "${CMAKE_CURRENT_BINARY_DIR}/missing-doctor-config.ini")
+    add_test(NAME mwb_client_topology_explain
+        COMMAND mwb_client topology explain "${CMAKE_CURRENT_SOURCE_DIR}/tests/simple.topology"
+    )
     add_test(NAME mwb_client_doctor_categories
         COMMAND ${CMAKE_COMMAND}
             "-DMWB_CLIENT=$<TARGET_FILE:mwb_client>"

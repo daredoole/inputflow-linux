@@ -17,7 +17,9 @@ Recommended first-run flow for most users:
    - Go to **Settings** -> Enter your Windows Host IP and Security Key.
 4. **Choose layout (optional):**
    - Open **Topology/Layout Wizard** for side-by-side, stacked, AAB, BAA, ABA, or asymmetric/manual presets.
-   - Confirm the dry-run preview to write `~/.config/mwb-client/*.topology` and enable `topology_file`/`topology_enabled`.
+   - Prefer the plain-language choices: `Linux left, Windows right`, `Linux above Windows`, `Linux | Linux | Windows`, `Windows | Linux | Linux`, or `Linux | Windows | Linux`.
+   - Confirm the preview to write `~/.config/mwb-client/*.topology` and enable `topology_file`/`topology_enabled`.
+   - Use **Explain Current Topology** or `mwb_client topology explain --config ~/.config/mwb-client/config.ini` to verify the English explanation matches your desk.
 5. **Pair with Windows:**
    - In the same UI, use the **Export Helper** option.
    - Run the exported `.ps1` script on your Windows machine to register the Linux peer.
@@ -119,6 +121,8 @@ This repository started as a fork of [chrischip/mwb-client-linux](https://github
 Supports `key_file`, `key_secret_id` (keyring), `screen_width/height` overrides, `topology_enabled`, `topology_file`, and more. Default path: `~/.config/mwb-client/config.ini`.
 
 Display-level topology is a separate opt-in contract. The default runtime remains MWB-compatible machine placement unless topology is explicitly enabled; see [docs/topology.md](docs/topology.md) for examples, wrap policies, validation, and cross-machine handoff behavior.
+
+Windows PowerToys still owns the Windows-side machine layout. InputFlow topology does not edit PowerToys per-display geometry; it only tells Linux which local display edge should hand off back to Windows. Keep the PowerToys machine position and the InputFlow topology links consistent.
 
 ### Screen Sizing
 The client detects screen size in this order:

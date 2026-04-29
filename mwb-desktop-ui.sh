@@ -1103,21 +1103,24 @@ layout_wizard() {
   local preset preset_label machine_a machine_b display_width display_height wrap_policy file_name
   local fields values gui_output topology_dir topology_path topology_content preview_path manual_template
 
-  preset_label="$(zenity --list --title="$APP_NAME topology/layout wizard" --width=620 --height=360 \
-    --text="Choose a common topology preset. A usually means this Linux machine; B usually means the Windows peer." \
-    --column="Preset" --column="Description" \
-    "Side-by-side" "A left of B" \
-    "Stacked" "A above B" \
-    "AAB" "Two A displays followed by B" \
-    "BAA" "B followed by two A displays" \
-    "ABA" "A split around B" \
-    "Asymmetric/manual" "Edit the topology file text directly" || true)"
+  preset_label="$(zenity --list --title="$APP_NAME topology/layout wizard" --width=760 --height=390 \
+    --text="Pick the layout that matches your desk. Linux means this machine; Windows means the PowerToys peer. Keep this consistent with the Windows PowerToys machine layout." \
+    --column="Layout" --column="Diagram" --column="Use when" \
+    "Linux left, Windows right" "Linux | Windows" "One Linux display beside Windows" \
+    "Linux above Windows" "Linux / Windows" "One display stacked above the other" \
+    "Two Linux displays, then Windows" "Linux | Linux | Windows" "AAB: dual Linux monitors with Windows on the far right" \
+    "Windows, then two Linux displays" "Windows | Linux | Linux" "BAA: Windows on the far left" \
+    "Linux split around Windows" "Linux | Windows | Linux" "ABA: Windows between two Linux displays" \
+    "Advanced/manual topology" "custom" "Asymmetric, unusual, or hand-edited layouts" || true)"
   [[ -n "$preset_label" ]] || return 1
 
   case "$preset_label" in
-    "Side-by-side") preset="side-by-side" ;;
-    "Stacked") preset="stacked" ;;
-    "Asymmetric/manual") preset="manual" ;;
+    "Linux left, Windows right") preset="side-by-side" ;;
+    "Linux above Windows") preset="stacked" ;;
+    "Two Linux displays, then Windows") preset="AAB" ;;
+    "Windows, then two Linux displays") preset="BAA" ;;
+    "Linux split around Windows") preset="ABA" ;;
+    "Advanced/manual topology") preset="manual" ;;
     *) preset="$preset_label" ;;
   esac
 
@@ -1137,7 +1140,7 @@ layout_wizard() {
     rm -f "$preview_path"
     [[ -n "$topology_content" ]] || return 1
   else
-    fields="machine_a:Machine A (Linux/current):entry||machine_b:Machine B (Windows/peer):entry||display_width:Display Width:entry||display_height:Display Height:entry||wrap_policy:Wrap Policy|none|horizontal|vertical|both:combo||file_name:Topology File Name:entry"
+    fields="machine_a:Linux Machine Name:entry||machine_b:Windows Machine Name:entry||display_width:Display Width:entry||display_height:Display Height:entry||wrap_policy:Wrap Policy|none|horizontal|vertical|both:combo||file_name:Topology File Name:entry"
     values="$machine_a|$machine_b|$display_width|$display_height|$wrap_policy|$file_name"
     gui_output="$(python3 "$SCRIPT_DIR/src/ConfigDialog.py" "$APP_NAME topology/layout wizard" "$fields" "$values" || true)"
     [[ -n "$gui_output" ]] || return 1
@@ -1172,8 +1175,15 @@ layout_wizard() {
   mkdir -p "$topology_dir"
   printf '%s\n' "$topology_content" >"$topology_path"
   write_topology_config_keys "$topology_path"
-  zenity --info --width=620 --text="Topology saved.\n\nFile: $topology_path\nConfig: $CONFIG_PATH"
+  zenity --info --width=680 --text="Topology saved.\n\nFile: $topology_path\nConfig: $CONFIG_PATH\n\nWindows PowerToys still owns the Windows-side machine layout. Keep the PowerToys Linux/Windows machine position consistent with this topology."
   offer_service_restart_if_active "Topology settings updated."
+}
+
+explain_topology() {
+  require_client_binary || return 1
+  local explanation
+  explanation="$("$APP_BIN" topology explain --config "$CONFIG_PATH" 2>&1 || true)"
+  zenity --text-info --title="$APP_NAME topology explanation" --width=860 --height=620 <<<"$explanation"
 }
 
 guided_pairing() {
@@ -1185,17 +1195,19 @@ guided_pairing() {
       "1. Discover Windows peer and save settings" \
       "2. Edit settings manually" \
       "3. Topology/layout wizard" \
-      "4. Export Windows helper" \
-      "5. Start service" \
-      "6. Run health check" \
+      "4. Explain current topology" \
+      "5. Export Windows helper" \
+      "6. Start service" \
+      "7. Run health check" \
       "Back" || true)"
     case "$choice" in
       "1. Discover Windows peer and save settings") discover_and_save_peer ;;
       "2. Edit settings manually") edit_settings ;;
       "3. Topology/layout wizard") layout_wizard ;;
-      "4. Export Windows helper") export_windows_helper ;;
-      "5. Start service") start_session ;;
-      "6. Run health check") health_check ;;
+      "4. Explain current topology") explain_topology ;;
+      "5. Export Windows helper") export_windows_helper ;;
+      "6. Start service") start_session ;;
+      "7. Run health check") health_check ;;
       ""|"Back") return 0 ;;
     esac
   done
@@ -1417,7 +1429,7 @@ Terminal=false
 Categories=Utility;Network;
 Keywords=mouse;keyboard;sharing;input;controller;
 StartupNotify=false
-Actions=GuidedPairing;HealthCheck;DiagnosticsBundle;ConnectionQuality;OpenSettings;OpenConnectionBehavior;ShowTrayHelp;ShowStatus;StartService;RestartService;StopService;
+Actions=GuidedPairing;TopologyWizard;ExplainTopology;HealthCheck;DiagnosticsBundle;ConnectionQuality;OpenSettings;OpenConnectionBehavior;ShowTrayHelp;ShowStatus;StartService;RestartService;StopService;
 
 [Desktop Action GuidedPairing]
 Name=Guided Pairing
@@ -1426,6 +1438,14 @@ Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") guided-pairing
 [Desktop Action HealthCheck]
 Name=Health Check
 Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") health-check
+
+[Desktop Action TopologyWizard]
+Name=Topology/Layout Wizard
+Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") layout-wizard
+
+[Desktop Action ExplainTopology]
+Name=Explain Current Topology
+Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") explain-topology
 
 [Desktop Action DiagnosticsBundle]
 Name=Diagnostics Bundle
@@ -1492,6 +1512,7 @@ main_menu() {
       --column="Action" \
       "Guided Pairing" \
       "Topology/Layout Wizard" \
+      "Explain Current Topology" \
       "Health Check" \
       "Diagnostics Bundle" \
       "Connection Quality" \
@@ -1509,6 +1530,7 @@ main_menu() {
     case "$choice" in
       "Guided Pairing") guided_pairing ;;
       "Topology/Layout Wizard") layout_wizard ;;
+      "Explain Current Topology") explain_topology ;;
       "Health Check") health_check ;;
       "Diagnostics Bundle") diagnostics_bundle ;;
       "Connection Quality") connection_quality ;;
@@ -1538,6 +1560,7 @@ case "${1:-menu}" in
   ""|menu) main_menu ;;
   guided-pairing|pairing|export-helper) guided_pairing ;;
   layout-wizard|topology-wizard|topology|layout) layout_wizard ;;
+  explain-topology|topology-explain) explain_topology ;;
   health-check|doctor) health_check ;;
   diagnostics-bundle|diagnostics) diagnostics_bundle ;;
   connection-quality|quality) connection_quality ;;
@@ -1553,7 +1576,7 @@ case "${1:-menu}" in
   tray) start_tray ;;
   install-desktop-entry|install-desktop-entries) install_desktop_entry ;;
   help|-h|--help)
-    printf 'Usage: %s [menu|guided-pairing|layout-wizard|health-check|diagnostics-bundle|connection-quality|settings|connection|discover|peers|tray-help|status|start|restart|stop|tray|install-desktop-entry]\n' "$(basename "${BASH_SOURCE[0]}")"
+    printf 'Usage: %s [menu|guided-pairing|layout-wizard|explain-topology|health-check|diagnostics-bundle|connection-quality|settings|connection|discover|peers|tray-help|status|start|restart|stop|tray|install-desktop-entry]\n' "$(basename "${BASH_SOURCE[0]}")"
     ;;
   *)
     zenity --error --text="Unknown action: $1"
