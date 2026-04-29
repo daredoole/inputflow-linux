@@ -59,7 +59,7 @@ void PrintGeneralUsage(std::ostream& out, const char* argv0) {
     out << "       " << binary << " discover [--state PATH] [--port PORT] [--timeout-ms MS] [--max-hosts N]\n";
     out << "       " << binary << " doctor [--config PATH] [--state PATH]\n";
     out << "       " << binary << " init-config [--config PATH] [--force] [--host IP] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME] [--port PORT]\n";
-    out << "       " << binary << " export-windows-pair [--config PATH] [--output PATH] [--force] [--linux-ip IP] [--position auto|top-left|top-right|bottom-left|bottom-right] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME]\n";
+    out << "       " << binary << " export-windows-pair [--config PATH] [--output PATH] [--force] [--dry-run] [--check] [--linux-ip IP] [--position auto|top-left|top-right|bottom-left|bottom-right] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME]\n";
     out << "       " << binary << " install-user-service [--config PATH] [--unit PATH] [--force]\n";
     out << "       " << binary << " secret-store [--config PATH] --secret-id ID [--key KEY | --key-file PATH | --stdin]\n";
     out << "       " << binary << " secret-clear [--config PATH] [--secret-id ID]\n";
@@ -605,23 +605,52 @@ std::string RenderWindowsPairScript(const std::string& peerName,
                                     const std::string& peerPosition) {
     std::ostringstream out;
     out
-        << "param([switch]$ClosePowerToys)\n\n"
+        << "param([switch]$ClosePowerToys, [switch]$DryRun, [switch]$Check)\n\n"
         << "$ErrorActionPreference = 'Stop'\n"
         << "$PeerName = '" << EscapePowerShellSingleQuoted(peerName) << "'\n"
         << "$PeerIp = '" << EscapePowerShellSingleQuoted(peerIp) << "'\n"
         << "$SecurityKey = '" << EscapePowerShellSingleQuoted(securityKey) << "'\n\n"
         << "$PeerPosition = '" << EscapePowerShellSingleQuoted(peerPosition) << "'\n\n"
-        << "function Stop-PowerToysProcesses {\n"
-        << "    $names = @('PowerToys', 'PowerToys.MouseWithoutBorders', 'MouseWithoutBorders')\n"
-        << "    foreach ($name in $names) {\n"
-        << "        Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue\n"
-        << "    }\n"
+        << "if ($ClosePowerToys) {\n"
+        << "    Write-Warning 'The -ClosePowerToys switch is accepted for compatibility but this helper no longer stops processes. Close PowerToys manually before writing if needed.'\n"
         << "}\n\n"
         << "function Ensure-ArrayLength {\n"
         << "    param([System.Collections.IList]$List, [int]$Length)\n"
         << "    while ($List.Count -lt $Length) {\n"
         << "        $List.Add('') | Out-Null\n"
         << "    }\n"
+        << "}\n\n"
+        << "function Assert-ValueSetting {\n"
+        << "    param($Props, [string]$Name)\n"
+        << "    $property = $Props.PSObject.Properties[$Name]\n"
+        << "    if ($null -eq $property) {\n"
+        << "        throw ('Unsupported Mouse Without Borders settings schema: missing properties.' + $Name + '.')\n"
+        << "    }\n"
+        << "    if ($null -eq $property.Value -or $null -eq $property.Value.PSObject.Properties['value']) {\n"
+        << "        throw ('Unsupported Mouse Without Borders settings schema: properties.' + $Name + '.value is missing.')\n"
+        << "    }\n"
+        << "}\n\n"
+        << "function Assert-SettingsSchema {\n"
+        << "    param($Settings)\n"
+        << "    if ($null -eq $Settings) {\n"
+        << "        throw 'Unsupported Mouse Without Borders settings schema: JSON root is empty.'\n"
+        << "    }\n"
+        << "    if ($null -ne $Settings.PSObject.Properties['version']) {\n"
+        << "        $versionText = [string]$Settings.version\n"
+        << "        if ([string]::IsNullOrWhiteSpace($versionText) -or $versionText -notmatch '^\\d+(\\.\\d+){0,3}$') {\n"
+        << "            throw ('Unsupported Mouse Without Borders settings version: ' + $versionText)\n"
+        << "        }\n"
+        << "    }\n"
+        << "    if ($null -eq $Settings.PSObject.Properties['properties'] -or $null -eq $Settings.properties) {\n"
+        << "        throw 'Unsupported Mouse Without Borders settings schema: properties object is missing.'\n"
+        << "    }\n"
+        << "    $props = $Settings.properties\n"
+        << "    if ($null -eq $props.PSObject.Properties['MachineMatrixString']) {\n"
+        << "        throw 'Unsupported Mouse Without Borders settings schema: properties.MachineMatrixString is missing.'\n"
+        << "    }\n"
+        << "    Assert-ValueSetting -Props $props -Name 'SecurityKey'\n"
+        << "    Assert-ValueSetting -Props $props -Name 'MachinePool'\n"
+        << "    Assert-ValueSetting -Props $props -Name 'Name2IP'\n"
         << "}\n\n"
         << "function Parse-MachinePool {\n"
         << "    param([string]$Value)\n"
@@ -719,20 +748,11 @@ std::string RenderWindowsPairScript(const std::string& peerName,
         << "if (-not (Test-Path -LiteralPath $settingsPath)) {\n"
         << "    throw 'Mouse Without Borders settings.json was not found. Start PowerToys once before running this helper.'\n"
         << "}\n\n"
-        << "if ($ClosePowerToys) {\n"
-        << "    Stop-PowerToysProcesses\n"
-        << "}\n\n"
-        << "$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'\n"
-        << "$backupPath = $settingsPath + '.bak-' + $timestamp\n"
-        << "Copy-Item -LiteralPath $settingsPath -Destination $backupPath -Force\n\n"
         << "$jsonText = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8\n"
         << "$settings = $jsonText | ConvertFrom-Json\n"
+        << "Assert-SettingsSchema -Settings $settings\n"
         << "$props = $settings.properties\n\n"
-        << "if ($null -eq $props.SecurityKey) {\n"
-        << "    $props | Add-Member -NotePropertyName SecurityKey -NotePropertyValue ([pscustomobject]@{ value = $SecurityKey })\n"
-        << "} else {\n"
-        << "    $props.SecurityKey.value = $SecurityKey\n"
-        << "}\n\n"
+        << "$props.SecurityKey.value = $SecurityKey\n\n"
         << "$matrix = New-Object System.Collections.ArrayList\n"
         << "foreach ($item in $props.MachineMatrixString) {\n"
         << "    [void]$matrix.Add([string]$item)\n"
@@ -788,8 +808,6 @@ std::string RenderWindowsPairScript(const std::string& peerName,
         << "$existingPool = ''\n"
         << "if ($null -ne $props.MachinePool -and $null -ne $props.MachinePool.value) {\n"
         << "    $existingPool = [string]$props.MachinePool.value\n"
-        << "} elseif ($null -eq $props.MachinePool) {\n"
-        << "    $props | Add-Member -NotePropertyName MachinePool -NotePropertyValue ([pscustomobject]@{ value = '' })\n"
         << "}\n\n"
         << "$selfId = 'NONE'\n"
         << "$otherEntries = New-Object System.Collections.ArrayList\n"
@@ -825,13 +843,30 @@ std::string RenderWindowsPairScript(const std::string& peerName,
         << "$existingName2IP = ''\n"
         << "if ($null -ne $props.Name2IP -and $null -ne $props.Name2IP.value) {\n"
         << "    $existingName2IP = [string]$props.Name2IP.value\n"
-        << "} elseif ($null -eq $props.Name2IP) {\n"
-        << "    $props | Add-Member -NotePropertyName Name2IP -NotePropertyValue ([pscustomobject]@{ value = '' })\n"
         << "}\n"
         << "$props.Name2IP.value = Upsert-Name2IP -Value $existingName2IP -Name $PeerName -Ip $PeerIp\n\n"
+        << "if ($Check) {\n"
+        << "    Write-Host 'Check passed: settings path, schema, version, and requested peer placement are compatible.'\n"
+        << "    Write-Host 'No changes written.'\n"
+        << "    Write-Host ('Planned MachineMatrixString: ' + (($props.MachineMatrixString | ForEach-Object { [string]$_ }) -join ','))\n"
+        << "    Write-Host ('Planned MachinePool: ' + [string]$props.MachinePool.value)\n"
+        << "    Write-Host ('Planned Name2IP: ' + [string]$props.Name2IP.value)\n"
+        << "    return\n"
+        << "}\n"
+        << "if ($DryRun) {\n"
+        << "    Write-Host 'Dry run: no changes written.'\n"
+        << "    Write-Host ('Planned MachineMatrixString: ' + (($props.MachineMatrixString | ForEach-Object { [string]$_ }) -join ','))\n"
+        << "    Write-Host ('Planned MachinePool: ' + [string]$props.MachinePool.value)\n"
+        << "    Write-Host ('Planned Name2IP: ' + [string]$props.Name2IP.value)\n"
+        << "    return\n"
+        << "}\n\n"
+        << "$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'\n"
+        << "$backupPath = $settingsPath + '.bak-' + $timestamp\n"
+        << "Copy-Item -LiteralPath $settingsPath -Destination $backupPath -Force\n"
         << "$settings | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $settingsPath -Encoding UTF8\n\n"
         << "Write-Host ('Updated settings: ' + $settingsPath)\n"
         << "Write-Host ('Backup written: ' + $backupPath)\n"
+        << "Write-Host ('Restore command: Copy-Item -LiteralPath \"' + $backupPath + '\" -Destination \"' + $settingsPath + '\" -Force')\n"
         << "Write-Host ('SecurityKey synchronized for ' + $PeerName)\n"
         << "Write-Host ('PeerPosition: ' + $PeerPosition)\n"
         << "Write-Host ('MachineMatrixString: ' + (($props.MachineMatrixString | ForEach-Object { [string]$_ }) -join ','))\n"
@@ -1907,6 +1942,8 @@ int HandleExportWindowsPairCommand(const std::vector<std::string>& args) {
     std::optional<std::filesystem::path> keyFileBaseDir;
     std::filesystem::path outputPath;
     bool force = false;
+    bool dryRun = false;
+    bool checkOnly = false;
     bool outputRequested = false;
     std::optional<std::string> linuxIpOverride;
     std::string peerPosition = "Auto";
@@ -1963,6 +2000,10 @@ int HandleExportWindowsPairCommand(const std::vector<std::string>& args) {
             outputPath = *value;
         } else if (arg == "--force") {
             force = true;
+        } else if (arg == "--dry-run") {
+            dryRun = true;
+        } else if (arg == "--check") {
+            checkOnly = true;
         } else if (arg == "--linux-ip") {
             const auto value = requireValue("--linux-ip");
             if (!value) {
@@ -2041,12 +2082,20 @@ int HandleExportWindowsPairCommand(const std::vector<std::string>& args) {
                      ("inputflow-windows-pair-" + SanitizeFileStem(config.machineName) + ".ps1");
     }
 
-    if (std::filesystem::exists(outputPath) && !force) {
+    if (!dryRun && !checkOnly && std::filesystem::exists(outputPath) && !force) {
         std::cerr << "ERR: Output file already exists: " << outputPath << ". Use --force to overwrite." << std::endl;
         return 1;
     }
 
     const std::string script = RenderWindowsPairScript(config.machineName, linuxIp, config.key, peerPosition);
+
+    if (dryRun || checkOnly) {
+        std::cout << script;
+        if (checkOnly) {
+            std::cerr << "INFO: No file written. Save this helper on Windows and run it with -Check to validate PowerToys Mouse Without Borders settings without writing." << std::endl;
+        }
+        return 0;
+    }
 
     try {
         const std::filesystem::path parent = outputPath.parent_path();
@@ -2085,9 +2134,16 @@ int HandleExportWindowsPairCommand(const std::vector<std::string>& args) {
     std::cout << "Wrote Windows pairing helper to " << outputPath << std::endl;
     std::cout << "Run on Windows:" << std::endl;
     std::cout << "  powershell -ExecutionPolicy Bypass -File .\\"
-              << outputPath.filename().string() << " -ClosePowerToys" << std::endl;
+              << outputPath.filename().string() << std::endl;
+    std::cout << "Check without writing:" << std::endl;
+    std::cout << "  powershell -ExecutionPolicy Bypass -File .\\"
+              << outputPath.filename().string() << " -Check" << std::endl;
+    std::cout << "Dry-run planned changes:" << std::endl;
+    std::cout << "  powershell -ExecutionPolicy Bypass -File .\\"
+              << outputPath.filename().string() << " -DryRun" << std::endl;
     std::cout << "This helper synchronizes the shared key plus MachineMatrixString, MachinePool, and Name2IP for '"
               << config.machineName << "'." << std::endl;
+    std::cout << "On update, the helper prints a backup path and restore command before reporting success." << std::endl;
     std::cout << "Configured peer position: " << peerPosition << std::endl;
     return 0;
 }

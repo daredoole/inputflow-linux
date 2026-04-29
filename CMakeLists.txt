@@ -125,6 +125,14 @@ if (BUILD_TESTING)
     target_compile_options(mwb_input_latency_tests PRIVATE -Wall -Wextra -Wpedantic)
     mwb_apply_sanitizers(mwb_input_latency_tests)
 
+    add_executable(mwb_topology_model_tests
+        tests/test_topology_model.cpp
+        src/TopologyModel.cpp
+    )
+    target_include_directories(mwb_topology_model_tests PRIVATE src)
+    target_compile_options(mwb_topology_model_tests PRIVATE -Wall -Wextra -Wpedantic)
+    mwb_apply_sanitizers(mwb_topology_model_tests)
+
     add_executable(mwb_mouse_trace_tests
         tests/test_mouse_trace.cpp
         src/InputManager.cpp
@@ -175,6 +183,7 @@ if (BUILD_TESTING)
     add_test(NAME mwb_inject_mouse_abs_tests COMMAND mwb_inject_mouse_abs_tests)
     add_test(NAME mwb_input_device_capability_tests COMMAND mwb_input_device_capability_tests)
     add_test(NAME mwb_input_latency_tests COMMAND mwb_input_latency_tests)
+    add_test(NAME mwb_topology_model_tests COMMAND mwb_topology_model_tests)
     add_test(NAME mwb_mouse_trace_tests COMMAND mwb_mouse_trace_tests)
     add_test(NAME mwb_media_key_bridge_tests COMMAND mwb_media_key_bridge_tests)
     add_test(NAME mwb_protocol_security_tests COMMAND mwb_protocol_security_tests)
@@ -186,6 +195,12 @@ if (BUILD_TESTING)
             "-DMWB_CLIENT=$<TARGET_FILE:mwb_client>"
             "-DCONFIG_PATH=${CMAKE_CURRENT_BINARY_DIR}/missing-doctor-config.ini"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/doctor_categories.cmake"
+    )
+    add_test(NAME mwb_export_windows_pair_helper
+        COMMAND ${CMAKE_COMMAND}
+            "-DMWB_CLIENT=$<TARGET_FILE:mwb_client>"
+            "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/export_windows_pair"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/export_windows_pair_helper.cmake"
     )
     add_test(NAME mwb_client_doctor_invalid_config COMMAND mwb_client doctor --config "${CMAKE_CURRENT_SOURCE_DIR}/tests/invalid_config.ini")
     set_tests_properties(mwb_client_doctor_invalid_config PROPERTIES WILL_FAIL TRUE)

@@ -101,6 +101,8 @@ User-facing beta operations:
 - [Health checks and diagnostics bundle](docs/beta-workflow.md#health-check)
 - [Connection quality and latency reporting](docs/beta-workflow.md#connection-quality)
 - [Packaging verification](docs/beta-workflow.md#packaging-verification)
+- [Migration from other keyboard/mouse sharing tools](docs/migration.md)
+- [Compatibility matrix and platform caveats](docs/compatibility.md)
 
 <a name="detailed-documentation"></a>
 ## Detailed Documentation
