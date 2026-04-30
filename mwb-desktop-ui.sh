@@ -13,6 +13,8 @@ RECONNECT_IDLE_CONFIG_KEY="${MWB_RECONNECT_IDLE_CONFIG_KEY:-reconnect_idle_retry
 MPRIS_MEDIA_KEYS_CONFIG_KEY="${MWB_MPRIS_MEDIA_KEYS_CONFIG_KEY:-mpris_media_keys_enabled}"
 MPRIS_PLAYER_CONFIG_KEY="${MWB_MPRIS_PLAYER_CONFIG_KEY:-mpris_player}"
 LATENCY_REPORT_CONFIG_KEY="${MWB_LATENCY_REPORT_CONFIG_KEY:-latency_report}"
+TOPOLOGY_ENABLED_CONFIG_KEY="${MWB_TOPOLOGY_ENABLED_CONFIG_KEY:-topology_enabled}"
+TOPOLOGY_FILE_CONFIG_KEY="${MWB_TOPOLOGY_FILE_CONFIG_KEY:-topology_file}"
 DIAGNOSTICS_BUNDLE_SCRIPT="$SCRIPT_DIR/scripts/inputflow-diagnostics-bundle.sh"
 DEFAULT_AUTO_CONNECT_ENABLED="${MWB_DEFAULT_AUTO_CONNECT_ENABLED:-true}"
 DEFAULT_RECONNECT_INITIAL_MS="${MWB_DEFAULT_RECONNECT_INITIAL_MS:-1000}"
@@ -231,6 +233,65 @@ canonical_managed_key() {
   done
 
   return 1
+}
+
+write_topology_config_keys() {
+  local topology_file="$1"
+  local tmp_path line line_key
+  local saw_enabled=false saw_file=false
+
+  mkdir -p "$(dirname "$CONFIG_PATH")"
+  tmp_path="$(mktemp "${CONFIG_PATH}.tmp.XXXXXX")"
+
+  if [[ -f "$CONFIG_PATH" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" =~ ^[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*= ]]; then
+        line_key="${BASH_REMATCH[1]}"
+        case "$line_key" in
+          "$TOPOLOGY_ENABLED_CONFIG_KEY")
+            printf '%s=true\n' "$TOPOLOGY_ENABLED_CONFIG_KEY" >>"$tmp_path"
+            saw_enabled=true
+            continue
+            ;;
+          "$TOPOLOGY_FILE_CONFIG_KEY")
+            printf '%s=%s\n' "$TOPOLOGY_FILE_CONFIG_KEY" "$topology_file" >>"$tmp_path"
+            saw_file=true
+            continue
+            ;;
+        esac
+      fi
+      printf '%s\n' "$line" >>"$tmp_path"
+    done <"$CONFIG_PATH"
+  fi
+
+  [[ "$saw_enabled" == true ]] || printf '%s=true\n' "$TOPOLOGY_ENABLED_CONFIG_KEY" >>"$tmp_path"
+  [[ "$saw_file" == true ]] || printf '%s=%s\n' "$TOPOLOGY_FILE_CONFIG_KEY" "$topology_file" >>"$tmp_path"
+  mv "$tmp_path" "$CONFIG_PATH"
+}
+
+disable_topology_config() {
+  local tmp_path line line_key
+  local saw_enabled=false
+
+  mkdir -p "$(dirname "$CONFIG_PATH")"
+  tmp_path="$(mktemp "${CONFIG_PATH}.tmp.XXXXXX")"
+
+  if [[ -f "$CONFIG_PATH" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" =~ ^[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*= ]]; then
+        line_key="${BASH_REMATCH[1]}"
+        if [[ "$line_key" == "$TOPOLOGY_ENABLED_CONFIG_KEY" ]]; then
+          printf '%s=false\n' "$TOPOLOGY_ENABLED_CONFIG_KEY" >>"$tmp_path"
+          saw_enabled=true
+          continue
+        fi
+      fi
+      printf '%s\n' "$line" >>"$tmp_path"
+    done <"$CONFIG_PATH"
+  fi
+
+  [[ "$saw_enabled" == true ]] || printf '%s=false\n' "$TOPOLOGY_ENABLED_CONFIG_KEY" >>"$tmp_path"
+  mv "$tmp_path" "$CONFIG_PATH"
 }
 
 write_config() {
@@ -468,6 +529,55 @@ read_peer_state() {
   return 1
 }
 
+normalize_host_label() {
+  local value="$1"
+  value="$(trim_value "$value")"
+  value="${value%%.*}"
+  printf '%s\n' "$value" | tr '[:upper:]' '[:lower:]'
+}
+
+host_labels_match() {
+  local left right
+  left="$(normalize_host_label "$1")"
+  right="$(normalize_host_label "$2")"
+  [[ -n "$left" && "$left" == "$right" ]]
+}
+
+read_peer_state_by_verified_name() {
+  local wanted_name="$1" wanted_port="$2"
+  local line host name port approved connected_now last_seen last_connected
+  local best_name="" best_connected="false" best_last_seen="0" best_last_connected="0" found="false"
+
+  [[ -n "$(normalize_host_label "$wanted_name")" ]] || return 1
+  [[ -f "$STATE_PATH" ]] || return 1
+
+  while IFS= read -r line; do
+    [[ "$line" == peer=* ]] || continue
+    IFS=$'\t' read -r host name port approved connected_now last_seen last_connected <<<"${line#peer=}"
+    [[ "$port" == "$wanted_port" && "$approved" == "true" ]] || continue
+    host_labels_match "$name" "$wanted_name" || continue
+    if [[ -z "$last_connected" ]]; then
+      last_connected="${last_seen:-0}"
+      last_seen="${connected_now:-0}"
+      connected_now="false"
+    fi
+    [[ "$last_seen" =~ ^[0-9]+$ ]] || last_seen="0"
+    [[ "$last_connected" =~ ^[0-9]+$ ]] || last_connected="0"
+    if [[ "$found" != "true" || "$last_connected" -gt "$best_last_connected" ]]; then
+      best_name="${name:-$wanted_name}"
+      best_last_seen="$last_seen"
+      best_last_connected="$last_connected"
+      found="true"
+    fi
+    if [[ "$connected_now" == "true" ]]; then
+      best_connected="true"
+    fi
+  done <"$STATE_PATH"
+
+  [[ "$found" == "true" ]] || return 1
+  printf '%s\ttrue\t%s\t%s\t%s\n' "$best_name" "$best_connected" "$best_last_seen" "$best_last_connected"
+}
+
 resolve_config_relative_path() {
   local path_value="$1"
 
@@ -660,7 +770,7 @@ service_state_label() {
 }
 
 menu_summary_text() {
-  local state host auth_label auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms
+  local state host key key_file secret_id auth_label auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms topology_enabled topology_file topology_label
   state="$(service_state)"
   host="$(read_config_value host)"
   key="$(read_config_value key)"
@@ -668,14 +778,22 @@ menu_summary_text() {
   secret_id="$(read_secret_id_value)"
   IFS=$'\t' read -r auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms < <(read_connection_behavior_values)
   auth_label="$(configured_auth_label "$key" "$key_file" "$secret_id")"
+  topology_enabled="$(read_config_value "$TOPOLOGY_ENABLED_CONFIG_KEY")"
+  topology_file="$(read_config_value "$TOPOLOGY_FILE_CONFIG_KEY")"
 
   [[ -n "$host" ]] || host="None"
+  if [[ "$topology_enabled" == "true" && -n "$topology_file" ]]; then
+    topology_label="$(basename "$topology_file")"
+  else
+    topology_label="Disabled"
+  fi
 
-  printf 'Status: %s\nHost: %s\nAuth: %s\nReconnect: %s' \
+  printf 'Status: %s\nHost: %s\nAuth: %s\nReconnect: %s\nTopology: %s' \
     "$(service_state_label "$state")" \
     "$host" \
     "$auth_label" \
-    "$( [[ "$auto_connect_enabled" == "true" ]] && printf 'Auto' || printf 'Manual' )"
+    "$( [[ "$auto_connect_enabled" == "true" ]] && printf 'Auto' || printf 'Manual' )" \
+    "$topology_label"
 }
 
 show_status() {
@@ -874,15 +992,18 @@ discover_peers() {
     /^  / {
       ip = $1
       name = "(unknown)"
+      verified = "no"
       network = "(default)"
       for (i = 2; i <= NF; i++) {
         if ($i ~ /^name=/) {
           name = substr($i, 6)
+        } else if ($i ~ /^verified=/) {
+          verified = substr($i, 10)
         } else if ($i ~ /^iface=/) {
           network = substr($i, 7)
         }
       }
-      print ip "|" name "|" network
+      print ip "|" name "|" verified "|" network
     }
   ')
   if [[ "${#candidates[@]}" -eq 0 ]]; then
@@ -891,15 +1012,18 @@ discover_peers() {
   fi
 
   local rows=()
-  local ip item name network paired_label connected_label configured_label last_connected_label state_name state_approved state_connected state_last_seen state_last_connected
+  local ip item name verified network paired_label connected_label configured_label last_connected_label state_name state_approved state_connected state_last_seen state_last_connected
   for item in "${candidates[@]}"; do
-    IFS='|' read -r ip name network <<< "$item"
+    IFS='|' read -r ip name verified network <<< "$item"
     state_name=""
     state_approved="false"
     state_connected="false"
     state_last_seen="0"
     state_last_connected="0"
     if IFS=$'\t' read -r state_name state_approved state_connected state_last_seen state_last_connected < <(read_peer_state "$ip" "$port" || true); then
+      :
+    elif [[ "$name" != "(unknown)" ]] &&
+      IFS=$'\t' read -r state_name state_approved state_connected state_last_seen state_last_connected < <(read_peer_state_by_verified_name "$name" "$port" || true); then
       :
     fi
     paired_label="$(format_paired_label "$state_approved")"
@@ -958,17 +1082,217 @@ Next steps:
 4. Return here and run Health Check."
 }
 
+sanitize_topology_name() {
+  local value="$1"
+  value="$(printf '%s' "$value" | tr -cs 'A-Za-z0-9_.-' '_' | sed 's/^_*//;s/_*$//')"
+  [[ -n "$value" ]] || value="machine"
+  printf '%s\n' "$value"
+}
+
+topology_default_machine_a() {
+  local machine_name
+  machine_name="$(read_config_value machine_name)"
+  [[ -n "$machine_name" ]] || machine_name="$(hostname -s 2>/dev/null || printf 'linux')"
+  sanitize_topology_name "$machine_name"
+}
+
+topology_default_machine_b() {
+  local host
+  host="$(read_config_value host)"
+  [[ -n "$host" ]] || host="windows"
+  sanitize_topology_name "$host"
+}
+
+topology_append_display() {
+  local id="$1" machine="$2" x="$3" y="$4" width="$5" height="$6"
+  printf 'display=%s,%s,%s,%s,%s,%s\n' "$id" "$machine" "$x" "$y" "$width" "$height"
+}
+
+topology_append_link() {
+  local source="$1" exit_edge="$2" target="$3" entry_edge="$4"
+  printf 'link=%s,%s,%s,%s\n' "$source" "$exit_edge" "$target" "$entry_edge"
+}
+
+generate_topology_content() {
+  local preset="$1" machine_a="$2" machine_b="$3" width="$4" height="$5" wrap_policy="$6" manual_content="${7:-}"
+  local a1="${machine_a}-1" a2="${machine_a}-2" b1="${machine_b}-1"
+  local x1=0 x2="$width" x3 y2="$height"
+
+  if [[ "$preset" == "manual" ]]; then
+    printf '%s\n' "$manual_content"
+    return 0
+  fi
+
+  x3=$((width * 2))
+
+  cat <<EOF
+# InputFlow topology file
+# format=inputflow-topology-draft-v1
+# preset=$preset
+# $TOPOLOGY_FILE_CONFIG_KEY/$TOPOLOGY_ENABLED_CONFIG_KEY enable topology-aware
+# runtime handoff. The preview step below only shows the file before writing it.
+wrap=$wrap_policy
+machine=$machine_a
+machine=$machine_b
+EOF
+
+  case "$preset" in
+    side-by-side)
+      topology_append_display "$a1" "$machine_a" "$x1" 0 "$width" "$height"
+      topology_append_display "$b1" "$machine_b" "$x2" 0 "$width" "$height"
+      topology_append_link "$a1" right "$b1" left
+      topology_append_link "$b1" left "$a1" right
+      ;;
+    stacked)
+      topology_append_display "$a1" "$machine_a" 0 0 "$width" "$height"
+      topology_append_display "$b1" "$machine_b" 0 "$y2" "$width" "$height"
+      topology_append_link "$a1" down "$b1" up
+      topology_append_link "$b1" up "$a1" down
+      ;;
+    AAB)
+      topology_append_display "$a1" "$machine_a" "$x1" 0 "$width" "$height"
+      topology_append_display "$a2" "$machine_a" "$x2" 0 "$width" "$height"
+      topology_append_display "$b1" "$machine_b" "$x3" 0 "$width" "$height"
+      topology_append_link "$a1" right "$a2" left
+      topology_append_link "$a2" left "$a1" right
+      topology_append_link "$a2" right "$b1" left
+      topology_append_link "$b1" left "$a2" right
+      ;;
+    BAA)
+      topology_append_display "$b1" "$machine_b" "$x1" 0 "$width" "$height"
+      topology_append_display "$a1" "$machine_a" "$x2" 0 "$width" "$height"
+      topology_append_display "$a2" "$machine_a" "$x3" 0 "$width" "$height"
+      topology_append_link "$b1" right "$a1" left
+      topology_append_link "$a1" left "$b1" right
+      topology_append_link "$a1" right "$a2" left
+      topology_append_link "$a2" left "$a1" right
+      ;;
+    ABA)
+      topology_append_display "$a1" "$machine_a" "$x1" 0 "$width" "$height"
+      topology_append_display "$b1" "$machine_b" "$x2" 0 "$width" "$height"
+      topology_append_display "$a2" "$machine_a" "$x3" 0 "$width" "$height"
+      topology_append_link "$a1" right "$b1" left
+      topology_append_link "$b1" left "$a1" right
+      topology_append_link "$b1" right "$a2" left
+      topology_append_link "$a2" left "$b1" right
+      ;;
+  esac
+}
+
+layout_wizard() {
+  local preset preset_label machine_a machine_b display_width display_height wrap_policy file_name
+  local fields values gui_output topology_dir topology_path topology_content preview_path manual_template
+
+  preset_label="$(zenity --list --title="$APP_NAME advanced topology/layout wizard" --width=820 --height=430 \
+    --text="Topology is optional. If this Fedora/Linux machine has one monitor, use PowerToys layout only and skip topology. Use topology only for multiple Linux displays, wrap, stacked/asymmetric layouts, or wrong-edge handoff problems." \
+    --column="Layout" --column="Diagram" --column="Use when" \
+    "Use PowerToys layout only" "no topology file" "One Linux/Fedora monitor; normal MWB-style setup" \
+    "Linux left, Windows right" "Linux | Windows" "One Linux display beside Windows" \
+    "Linux above Windows" "Linux / Windows" "One display stacked above the other" \
+    "Two Linux displays, then Windows" "Linux | Linux | Windows" "AAB: dual Linux monitors with Windows on the far right" \
+    "Windows, then two Linux displays" "Windows | Linux | Linux" "BAA: Windows on the far left" \
+    "Linux split around Windows" "Linux | Windows | Linux" "ABA: Windows between two Linux displays" \
+    "Advanced/manual topology" "custom" "Asymmetric, unusual, or hand-edited layouts" || true)"
+  [[ -n "$preset_label" ]] || return 1
+
+  case "$preset_label" in
+    "Use PowerToys layout only") disable_topology; return $? ;;
+    "Linux left, Windows right") preset="side-by-side" ;;
+    "Linux above Windows") preset="stacked" ;;
+    "Two Linux displays, then Windows") preset="AAB" ;;
+    "Windows, then two Linux displays") preset="BAA" ;;
+    "Linux split around Windows") preset="ABA" ;;
+    "Advanced/manual topology") preset="manual" ;;
+    *) preset="$preset_label" ;;
+  esac
+
+  machine_a="$(topology_default_machine_a)"
+  machine_b="$(topology_default_machine_b)"
+  display_width="$(read_config_value screen_width)"; [[ -n "$display_width" ]] || display_width="1920"
+  display_height="$(read_config_value screen_height)"; [[ -n "$display_height" ]] || display_height="1080"
+  wrap_policy="none"
+  file_name="topology-${preset}.topology"
+
+  if [[ "$preset" == "manual" ]]; then
+    manual_template="$(generate_topology_content "side-by-side" "$machine_a" "$machine_b" "$display_width" "$display_height" "$wrap_policy")"
+    preview_path="$(mktemp)"
+    printf '%s\n' "$manual_template" >"$preview_path"
+    topology_content="$(zenity --text-info --editable --title="$APP_NAME manual topology" --width=760 --height=520 \
+      --filename="$preview_path" || true)"
+    rm -f "$preview_path"
+    [[ -n "$topology_content" ]] || return 1
+  else
+    fields="machine_a:Linux Machine Name:entry||machine_b:Windows Machine Name:entry||display_width:Display Width:entry||display_height:Display Height:entry||wrap_policy:Wrap Policy|none|horizontal|vertical|both:combo||file_name:Topology File Name:entry"
+    values="$machine_a|$machine_b|$display_width|$display_height|$wrap_policy|$file_name"
+    gui_output="$(python3 "$SCRIPT_DIR/src/ConfigDialog.py" "$APP_NAME topology/layout wizard" "$fields" "$values" || true)"
+    [[ -n "$gui_output" ]] || return 1
+    IFS='|' read -r machine_a machine_b display_width display_height wrap_policy file_name <<< "$gui_output"
+
+    machine_a="$(sanitize_topology_name "$machine_a")"
+    machine_b="$(sanitize_topology_name "$machine_b")"
+    if ! is_integer_in_range "$display_width" 1 100000; then zenity --error --text="Display width must be a positive integer."; return 1; fi
+    if ! is_integer_in_range "$display_height" 1 100000; then zenity --error --text="Display height must be a positive integer."; return 1; fi
+    topology_content="$(generate_topology_content "$preset" "$machine_a" "$machine_b" "$display_width" "$display_height" "$wrap_policy")"
+  fi
+
+  file_name="$(basename "${file_name:-topology-${preset}.topology}")"
+  [[ "$file_name" == *.topology ]] || file_name="${file_name}.topology"
+  topology_dir="$(dirname "$CONFIG_PATH")"
+  topology_path="$topology_dir/$file_name"
+
+  preview_path="$(mktemp)"
+  printf '%s\n' "$topology_content" >"$preview_path"
+  if ! zenity --text-info --title="$APP_NAME topology dry-run preview" --width=820 --height=560 \
+      --filename="$preview_path" --ok-label="Continue" --cancel-label="Back"; then
+    rm -f "$preview_path"
+    return 1
+  fi
+  rm -f "$preview_path"
+
+  if ! zenity --question --title="$APP_NAME advanced topology/layout wizard" --width=620 \
+      --text="Apply this advanced topology?\n\nFor one Linux monitor, cancel and use PowerToys layout only.\n\nWill write:\n$topology_path\n\nWill set:\n$TOPOLOGY_ENABLED_CONFIG_KEY=true\n$TOPOLOGY_FILE_CONFIG_KEY=$topology_path\n\nTopology will enforce configured cross-machine edge handoffs at runtime. Same-machine edges remain local."; then
+    return 1
+  fi
+
+  mkdir -p "$topology_dir"
+  printf '%s\n' "$topology_content" >"$topology_path"
+  write_topology_config_keys "$topology_path"
+  zenity --info --width=680 --text="Topology saved.\n\nFile: $topology_path\nConfig: $CONFIG_PATH\n\nWindows PowerToys still owns the Windows-side machine layout. Keep the PowerToys Linux/Windows machine position consistent with this topology."
+  offer_service_restart_if_active "Topology settings updated."
+}
+
+disable_topology() {
+  if ! zenity --question --title="$APP_NAME topology" --width=620 \
+      --text="Use PowerToys layout only?\n\nThis disables InputFlow topology by setting:\n$TOPOLOGY_ENABLED_CONFIG_KEY=false\n\nThis is the recommended mode for a single Fedora/Linux monitor. PowerToys continues to decide the Linux/Windows machine placement."; then
+    return 1
+  fi
+
+  disable_topology_config
+  zenity --info --width=620 --text="Topology disabled.\n\nInputFlow will use the normal PowerToys/MWB-style machine layout path. No topology file is required for a single Linux monitor."
+  offer_service_restart_if_active "Topology disabled."
+}
+
+explain_topology() {
+  require_client_binary || return 1
+  local explanation
+  explanation="$("$APP_BIN" topology explain --config "$CONFIG_PATH" 2>&1 || true)"
+  zenity --text-info --title="$APP_NAME topology explanation" --width=860 --height=620 <<<"$explanation"
+}
+
 guided_pairing() {
   while true; do
     local choice
-    choice="$(zenity --list --title="$APP_NAME guided pairing" --width=620 --height=360 \
-      --text="Use this flow to discover Windows, save Linux settings, export the Windows helper, then verify the setup." \
+    choice="$(zenity --list --title="$APP_NAME guided pairing" --width=620 --height=390 \
+      --text="Use this flow to discover Windows, save Linux settings, export the Windows helper, then verify the setup. Topology is optional; skip it for one Linux monitor." \
       --column="Step" \
       "1. Discover Windows peer and save settings" \
       "2. Edit settings manually" \
       "3. Export Windows helper" \
       "4. Start service" \
       "5. Run health check" \
+      "Optional: Advanced topology/layout" \
+      "Optional: Use PowerToys layout only" \
+      "Optional: Explain current topology" \
       "Back" || true)"
     case "$choice" in
       "1. Discover Windows peer and save settings") discover_and_save_peer ;;
@@ -976,6 +1300,9 @@ guided_pairing() {
       "3. Export Windows helper") export_windows_helper ;;
       "4. Start service") start_session ;;
       "5. Run health check") health_check ;;
+      "Optional: Advanced topology/layout") layout_wizard ;;
+      "Optional: Use PowerToys layout only") disable_topology ;;
+      "Optional: Explain current topology") explain_topology ;;
       ""|"Back") return 0 ;;
     esac
   done
@@ -1197,7 +1524,7 @@ Terminal=false
 Categories=Utility;Network;
 Keywords=mouse;keyboard;sharing;input;controller;
 StartupNotify=false
-Actions=GuidedPairing;HealthCheck;DiagnosticsBundle;ConnectionQuality;OpenSettings;OpenConnectionBehavior;ShowTrayHelp;ShowStatus;StartService;RestartService;StopService;
+Actions=GuidedPairing;DisableTopology;TopologyWizard;ExplainTopology;HealthCheck;DiagnosticsBundle;ConnectionQuality;OpenSettings;OpenConnectionBehavior;ShowTrayHelp;ShowStatus;StartService;RestartService;StopService;
 
 [Desktop Action GuidedPairing]
 Name=Guided Pairing
@@ -1206,6 +1533,18 @@ Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") guided-pairing
 [Desktop Action HealthCheck]
 Name=Health Check
 Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") health-check
+
+[Desktop Action DisableTopology]
+Name=Use PowerToys Layout Only
+Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") disable-topology
+
+[Desktop Action TopologyWizard]
+Name=Advanced Topology/Layout
+Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") layout-wizard
+
+[Desktop Action ExplainTopology]
+Name=Explain Current Topology
+Exec=$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}") explain-topology
 
 [Desktop Action DiagnosticsBundle]
 Name=Diagnostics Bundle
@@ -1268,9 +1607,12 @@ EOF
 main_menu() {
   while true; do
     local choice
-    choice="$(zenity --list --title="$APP_NAME" --text="$(menu_summary_text)" --width=540 --height=400 \
+    choice="$(zenity --list --title="$APP_NAME" --text="$(menu_summary_text)" --width=540 --height=430 \
       --column="Action" \
       "Guided Pairing" \
+      "Use PowerToys Layout Only" \
+      "Advanced Topology/Layout" \
+      "Explain Current Topology" \
       "Health Check" \
       "Diagnostics Bundle" \
       "Connection Quality" \
@@ -1287,6 +1629,9 @@ main_menu() {
 
     case "$choice" in
       "Guided Pairing") guided_pairing ;;
+      "Use PowerToys Layout Only") disable_topology ;;
+      "Advanced Topology/Layout") layout_wizard ;;
+      "Explain Current Topology") explain_topology ;;
       "Health Check") health_check ;;
       "Diagnostics Bundle") diagnostics_bundle ;;
       "Connection Quality") connection_quality ;;
@@ -1315,6 +1660,9 @@ require_ui
 case "${1:-menu}" in
   ""|menu) main_menu ;;
   guided-pairing|pairing|export-helper) guided_pairing ;;
+  disable-topology|powertoys-layout-only|simple-layout) disable_topology ;;
+  layout-wizard|topology-wizard|topology|layout) layout_wizard ;;
+  explain-topology|topology-explain) explain_topology ;;
   health-check|doctor) health_check ;;
   diagnostics-bundle|diagnostics) diagnostics_bundle ;;
   connection-quality|quality) connection_quality ;;
@@ -1330,7 +1678,7 @@ case "${1:-menu}" in
   tray) start_tray ;;
   install-desktop-entry|install-desktop-entries) install_desktop_entry ;;
   help|-h|--help)
-    printf 'Usage: %s [menu|guided-pairing|health-check|diagnostics-bundle|connection-quality|settings|connection|discover|peers|tray-help|status|start|restart|stop|tray|install-desktop-entry]\n' "$(basename "${BASH_SOURCE[0]}")"
+    printf 'Usage: %s [menu|guided-pairing|disable-topology|layout-wizard|explain-topology|health-check|diagnostics-bundle|connection-quality|settings|connection|discover|peers|tray-help|status|start|restart|stop|tray|install-desktop-entry]\n' "$(basename "${BASH_SOURCE[0]}")"
     ;;
   *)
     zenity --error --text="Unknown action: $1"

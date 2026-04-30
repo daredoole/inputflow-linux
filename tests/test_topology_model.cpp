@@ -211,6 +211,114 @@ void TestValidationRejectsImpossibleEdgeMappings() {
            "incompatible, diagonal, or self edge mappings should be reported");
 }
 
+void TestParseTopologyConfigAcceptsLineBasedFormat() {
+    mwb::TopologyModel model;
+    std::string error;
+    const std::string text =
+        "# simple two-machine layout\n"
+        "machine=A\n"
+        "machine=B\n"
+        "display=A1,A,0,0,1920,1080\n"
+        "display=B1,B,1920,0,2560,1440\n"
+        "link=A1,right,B1,left\n"
+        "wrap=none\n";
+
+    Expect(mwb::ParseTopologyConfig(text, model, &error), "ParseTopologyConfig should accept valid text");
+    Expect(error.empty(), "Valid topology parse should not set an error");
+    Expect(model.machines().size() == 2, "Parsed topology should keep machines");
+    Expect(model.displays().size() == 2, "Parsed topology should keep displays");
+    Expect(model.borderLinks().size() == 1, "Parsed topology should keep links");
+    Expect(model.validate().empty(), "Parsed topology should validate");
+
+    const auto transition = model.transitionFromEdge("A1", mwb::EdgeDirection::Right, 540);
+    Expect(transition.has_value(), "Parsed topology should route configured link");
+    if (transition.has_value()) {
+        ExpectEqual(transition->targetDisplayId, "B1", "Parsed topology target display");
+        Expect(transition->entryEdge == mwb::EdgeDirection::Left, "Parsed topology entry edge");
+    }
+}
+
+void TestParseTopologyConfigRejectsInvalidLines() {
+    mwb::TopologyModel model;
+    std::string error;
+    const std::string text =
+        "machine=A\n"
+        "display=A1,A,0,0,not-a-width,1080\n";
+
+    Expect(!mwb::ParseTopologyConfig(text, model, &error), "ParseTopologyConfig should reject invalid display values");
+    Expect(error.find("line 2") != std::string::npos, "Invalid topology parse should report line number");
+}
+
+void TestPointerTransitionResolverUsesAbsoluteEdges() {
+    mwb::TopologyModel model = BaseModel();
+    model.addDisplay({"A1", "A", 0, 0, 1920, 1080});
+    model.addDisplay({"B1", "B", 1920, 0, 2560, 1440});
+    model.addBorderLink({"A1", mwb::EdgeDirection::Right, "B1", mwb::EdgeDirection::Left});
+
+    const auto transition = mwb::ResolveTopologyPointerTransition(model, "A1", 65535, 32767);
+    Expect(transition.has_value(), "Absolute right edge should resolve topology transition");
+    if (transition.has_value()) {
+        ExpectEqual(transition->sourceDisplayId, "A1", "Pointer transition source display");
+        Expect(transition->exitEdge == mwb::EdgeDirection::Right, "Pointer transition exit edge");
+        ExpectEqual(transition->targetDisplayId, "B1", "Pointer transition target display");
+        Expect(transition->entryEdge == mwb::EdgeDirection::Left, "Pointer transition entry edge");
+    }
+
+    Expect(!mwb::ResolveTopologyPointerTransition(model, "A1", 32000, 32767).has_value(),
+           "Non-edge absolute pointer move should not resolve transition");
+}
+
+void TestMachineScopedPointerResolverFindsDisplayAtDesktopEdge() {
+    mwb::TopologyModel model = BaseModel();
+    model.addDisplay({"A1", "A", 0, 0, 1920, 1080});
+    model.addDisplay({"A2", "A", 1920, 0, 1920, 1080});
+    model.addDisplay({"B1", "B", 0, 0, 1920, 1080});
+    model.addBorderLink({"A2", mwb::EdgeDirection::Right, "B1", mwb::EdgeDirection::Left});
+
+    const auto transition = mwb::ResolveTopologyPointerTransitionForMachine(
+        model,
+        "A",
+        3840,
+        1080,
+        65535,
+        32767);
+    Expect(transition.has_value(), "Machine-scoped resolver should use the local display at desktop edge");
+    if (transition.has_value()) {
+        ExpectEqual(transition->sourceDisplayId, "A2", "Machine-scoped resolver source display");
+        ExpectEqual(transition->targetDisplayId, "B1", "Machine-scoped resolver target display");
+    }
+}
+
+void TestMachineScopedPointerResolverRejectsUnlinkedEdges() {
+    mwb::TopologyModel model = BaseModel();
+    model.addDisplay({"A1", "A", 0, 0, 1920, 1080});
+    model.addDisplay({"B1", "B", 1920, 0, 1920, 1080});
+
+    const auto transition = mwb::ResolveTopologyPointerTransitionForMachine(
+        model,
+        "A",
+        1920,
+        1080,
+        65535,
+        32767);
+    Expect(!transition.has_value(), "Machine-scoped resolver should reject unlinked desktop edges");
+}
+
+void TestTargetNormalizedPointMapsEntryEdge() {
+    mwb::TopologyModel model = BaseModel();
+    model.addDisplay({"A1", "A", 0, 0, 1920, 1080});
+    model.addDisplay({"B1", "B", 0, 0, 2560, 1440});
+
+    const auto point = mwb::MapTransitionToTargetNormalizedPoint(
+        model,
+        {"A1", mwb::EdgeDirection::Right, "B1", mwb::EdgeDirection::Left, 720});
+    Expect(point.has_value(), "Handoff mapping should produce a normalized target point");
+    if (point.has_value()) {
+        ExpectEqual(point->x, 0, "Left-edge handoff should enter at normalized x=0");
+        ExpectEqual(point->y, 32790, "Target midpoint should be normalized for target display height");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -224,6 +332,12 @@ int main() {
     TestValidationRejectsMissingDisplaysForLinks();
     TestValidationRejectsContradictoryDuplicateEdgeLinks();
     TestValidationRejectsImpossibleEdgeMappings();
+    TestParseTopologyConfigAcceptsLineBasedFormat();
+    TestParseTopologyConfigRejectsInvalidLines();
+    TestPointerTransitionResolverUsesAbsoluteEdges();
+    TestMachineScopedPointerResolverFindsDisplayAtDesktopEdge();
+    TestMachineScopedPointerResolverRejectsUnlinkedEdges();
+    TestTargetNormalizedPointMapsEntryEdge();
 
     if (g_failures == 0) {
         std::cout << "Topology model tests passed." << std::endl;

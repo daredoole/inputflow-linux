@@ -15,6 +15,7 @@
 #include <net/if.h>
 #include <poll.h>
 #include <set>
+#include <sstream>
 #include <string>
 #include <tuple>
 #include <unordered_set>
@@ -31,6 +32,7 @@ namespace {
 constexpr std::size_t kAbsoluteMaxHostsPerSubnet = 4096;
 constexpr std::size_t kAbsoluteMaxConcurrentProbes = 128;
 constexpr int kMinimumConnectTimeoutMs = 25;
+constexpr int kMinimumHostNameLookupTimeoutMs = 1000;
 constexpr uint16_t kMdnsPort = 5353;
 constexpr uint16_t kNetbiosNameServicePort = 137;
 
@@ -246,7 +248,7 @@ std::string NormalizeDiscoveredName(std::string value) {
     return value;
 }
 
-std::string SelectCorroboratedDiscoveredName(const std::array<std::string, 3>& names) {
+std::string SelectCorroboratedDiscoveredName(const std::array<std::string, 4>& names) {
     for (std::size_t left = 0; left < names.size(); ++left) {
         if (names[left].empty()) {
             continue;
@@ -260,7 +262,7 @@ std::string SelectCorroboratedDiscoveredName(const std::array<std::string, 3>& n
     return {};
 }
 
-std::string SelectFirstDiscoveredName(const std::array<std::string, 3>& names) {
+std::string SelectFirstDiscoveredName(const std::array<std::string, 4>& names) {
     for (const auto& name : names) {
         if (!name.empty()) {
             return name;
@@ -299,6 +301,50 @@ std::string AvahiResolveAddress(uint32_t address) {
         return {};
     }
     return NormalizeDiscoveredName(name);
+}
+
+std::string NmblookupResolveAddress(uint32_t address, int timeoutMs) {
+    constexpr const char* kTimeoutPath = "/usr/bin/timeout";
+    constexpr const char* kNmblookupPath = "/usr/bin/nmblookup";
+    if (access(kTimeoutPath, X_OK) != 0 || access(kNmblookupPath, X_OK) != 0) {
+        return {};
+    }
+
+    const std::string ipAddress = FormatIpv4Address(address);
+    const int timeoutSeconds = std::max(1, (std::min(timeoutMs, 3000) + 999) / 1000);
+    const std::string command = std::string(kTimeoutPath) + " " + std::to_string(timeoutSeconds) + "s " +
+        kNmblookupPath + " -A " + ipAddress + " 2>/dev/null";
+    std::unique_ptr<FILE, int (*)(FILE*)> pipe(popen(command.c_str(), "r"), pclose);
+    if (!pipe) {
+        return {};
+    }
+
+    std::array<char, 512> buffer{};
+    std::string fallbackName;
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr) {
+        const std::string line = TrimDiscoveredName(buffer.data());
+        if (line.find("<GROUP>") != std::string::npos) {
+            continue;
+        }
+        if (line.find("<00>") == std::string::npos && line.find("<20>") == std::string::npos) {
+            continue;
+        }
+
+        std::istringstream stream(line);
+        std::string name;
+        stream >> name;
+        if (name.empty() || name == "MAC") {
+            continue;
+        }
+        if (line.find("<00>") != std::string::npos) {
+            return NormalizeDiscoveredName(name);
+        }
+        if (fallbackName.empty()) {
+            fallbackName = NormalizeDiscoveredName(name);
+        }
+    }
+
+    return fallbackName;
 }
 
 void AppendUint16(std::vector<uint8_t>& bytes, uint16_t value) {
@@ -835,10 +881,12 @@ DiscoveryCandidate ProbeCandidate(const ProbeTarget& target, const DiscoveryOpti
     candidate.interfaceName = target.interfaceName;
     candidate.status = ProbeTcpPort(target.address, options.port, options.connectTimeoutMs);
     if (options.resolveHostNames && candidate.status == DiscoveryStatus::Open) {
-        std::array<std::string, 3> resolvedNames = {
+        const int nameLookupTimeoutMs = std::max(options.connectTimeoutMs, kMinimumHostNameLookupTimeoutMs);
+        std::array<std::string, 4> resolvedNames = {
             NormalizeDiscoveredName(AvahiResolveAddress(target.address)),
-            NormalizeDiscoveredName(MdnsReverseLookup(target.address, options.connectTimeoutMs)),
-            NormalizeDiscoveredName(NetbiosNodeStatusLookup(target.address, options.connectTimeoutMs)),
+            NormalizeDiscoveredName(MdnsReverseLookup(target.address, nameLookupTimeoutMs)),
+            NormalizeDiscoveredName(NetbiosNodeStatusLookup(target.address, nameLookupTimeoutMs)),
+            NormalizeDiscoveredName(NmblookupResolveAddress(target.address, nameLookupTimeoutMs)),
         };
         candidate.hostName = SelectCorroboratedDiscoveredName(resolvedNames);
         candidate.hostNameVerified = !candidate.hostName.empty();

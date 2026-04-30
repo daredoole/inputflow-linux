@@ -23,7 +23,7 @@ For the guided pairing flow, see [Public Beta Workflow](beta-workflow.md#guided-
 | --- | --- |
 | Server | A peer that currently owns the local pointer and sends input to another peer. This role is situational, not a fixed machine type. |
 | Client | A peer receiving remote input. This role is also situational. |
-| Screen | A machine entry in the current MWB layout. Multi-display topology is tracked separately on the roadmap. |
+| Screen | A machine entry in the current MWB layout. Display-level topology is a separate opt-in contract. |
 | Screen name | `machine_name` / MWB peer name. Names must match what the other peer expects. |
 | Configuration file | `~/.config/mwb-client/config.ini` for InputFlow; PowerToys MWB settings on Windows. |
 | Shared secret / password | MWB security key. InputFlow can read it from an inline `key`, `key_file`, or Secret Service `key_secret_id`. |
@@ -75,6 +75,6 @@ Avoid publishing configs, helper scripts, logs, or screenshots that expose keys,
 
 ## Topology Roadmap
 
-InputFlow currently focuses on MWB-compatible machine placement. The topology roadmap includes a cleaner machine/display split, explicit wrap policies, AAB/BAA/ABA layouts, stacked layouts, asymmetric layouts, and dry-run path previews so users can inspect pointer transitions before applying them.
+InputFlow defaults to MWB-compatible machine placement. Optional topology adds a cleaner machine/display split, explicit wrap policies, AAB/BAA/ABA layouts, stacked layouts, asymmetric layouts, and configured cross-machine edge handoff.
 
-Until those features are user-facing, treat topology as machine-level MWB placement and verify changes in PowerToys MWB after exporting.
+Until the runtime topology feature gate is enabled and validated for your setup, treat topology as machine-level MWB placement and verify changes in PowerToys MWB after exporting. If you are testing the layout wizard or runtime topology branch, use the [Topology Config Contract](topology.md) and keep `wrap=none` with explicit links until validation output matches the intended handoff behavior.

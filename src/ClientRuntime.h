@@ -1,18 +1,20 @@
 #pragma once
 
 #include <atomic>
+#include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
-#include <functional>
 
 #include "ClipboardManager.h"
 #include "InputDispatcher.h"
 #include "InputLatencyStats.h"
 #include "InputManager.h"
 #include "NetworkManager.h"
+#include "TopologyModel.h"
 
 namespace mwb {
 
@@ -38,6 +40,8 @@ struct RuntimeOptions {
     bool debugKeyLogging{false};
     bool debugShortcutLogging{false};
     bool latencyReport{false};
+    bool topologyRuntimeEnabled{false};
+    std::filesystem::path topologyFilePath;
     std::function<void(const std::string&, int, const std::string&, uint32_t, uint32_t)> onSessionEstablished;
     std::function<void()> onSessionDisconnected;
 };
@@ -65,6 +69,7 @@ public:
 
 private:
     ScreenSize DetectScreenSize() const;
+    void ConfigureTopologyPreview(const ScreenSize& screenSize);
     void StartClipboardWatcher();
     void StopClipboardWatcher();
 
@@ -73,6 +78,7 @@ private:
     InputManager m_input;
     std::shared_ptr<InputLatencyStats> m_latencyStats;
     InputDispatcher m_dispatcher;
+    std::shared_ptr<TopologyModel> m_topology;
     std::unique_ptr<NetworkManager> m_network;
     std::unique_ptr<ClipboardManager> m_clipboard;
     std::atomic<bool> m_clipboardWatcherRunning{false};

@@ -37,6 +37,7 @@ public:
     void SetReconnectBackoff(int initialBackoffMs, int maxBackoffMs, int idleRetryMs);
     bool Connect();
     void RunLoop();
+    bool SendMouse(const MouseData& mouse);
     bool SendPacket(MWBPacket& packet, bool isBig);
     void Stop();
     void SetScreenSize(int w, int h) { m_screenW = w; m_screenH = h; }
