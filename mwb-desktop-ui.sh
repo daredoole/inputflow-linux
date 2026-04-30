@@ -529,6 +529,55 @@ read_peer_state() {
   return 1
 }
 
+normalize_host_label() {
+  local value="$1"
+  value="$(trim_value "$value")"
+  value="${value%%.*}"
+  printf '%s\n' "$value" | tr '[:upper:]' '[:lower:]'
+}
+
+host_labels_match() {
+  local left right
+  left="$(normalize_host_label "$1")"
+  right="$(normalize_host_label "$2")"
+  [[ -n "$left" && "$left" == "$right" ]]
+}
+
+read_peer_state_by_verified_name() {
+  local wanted_name="$1" wanted_port="$2"
+  local line host name port approved connected_now last_seen last_connected
+  local best_name="" best_connected="false" best_last_seen="0" best_last_connected="0" found="false"
+
+  [[ -n "$(normalize_host_label "$wanted_name")" ]] || return 1
+  [[ -f "$STATE_PATH" ]] || return 1
+
+  while IFS= read -r line; do
+    [[ "$line" == peer=* ]] || continue
+    IFS=$'\t' read -r host name port approved connected_now last_seen last_connected <<<"${line#peer=}"
+    [[ "$port" == "$wanted_port" && "$approved" == "true" ]] || continue
+    host_labels_match "$name" "$wanted_name" || continue
+    if [[ -z "$last_connected" ]]; then
+      last_connected="${last_seen:-0}"
+      last_seen="${connected_now:-0}"
+      connected_now="false"
+    fi
+    [[ "$last_seen" =~ ^[0-9]+$ ]] || last_seen="0"
+    [[ "$last_connected" =~ ^[0-9]+$ ]] || last_connected="0"
+    if [[ "$found" != "true" || "$last_connected" -gt "$best_last_connected" ]]; then
+      best_name="${name:-$wanted_name}"
+      best_last_seen="$last_seen"
+      best_last_connected="$last_connected"
+      found="true"
+    fi
+    if [[ "$connected_now" == "true" ]]; then
+      best_connected="true"
+    fi
+  done <"$STATE_PATH"
+
+  [[ "$found" == "true" ]] || return 1
+  printf '%s\ttrue\t%s\t%s\t%s\n' "$best_name" "$best_connected" "$best_last_seen" "$best_last_connected"
+}
+
 resolve_config_relative_path() {
   local path_value="$1"
 
@@ -943,15 +992,18 @@ discover_peers() {
     /^  / {
       ip = $1
       name = "(unknown)"
+      verified = "no"
       network = "(default)"
       for (i = 2; i <= NF; i++) {
         if ($i ~ /^name=/) {
           name = substr($i, 6)
+        } else if ($i ~ /^verified=/) {
+          verified = substr($i, 10)
         } else if ($i ~ /^iface=/) {
           network = substr($i, 7)
         }
       }
-      print ip "|" name "|" network
+      print ip "|" name "|" verified "|" network
     }
   ')
   if [[ "${#candidates[@]}" -eq 0 ]]; then
@@ -960,15 +1012,18 @@ discover_peers() {
   fi
 
   local rows=()
-  local ip item name network paired_label connected_label configured_label last_connected_label state_name state_approved state_connected state_last_seen state_last_connected
+  local ip item name verified network paired_label connected_label configured_label last_connected_label state_name state_approved state_connected state_last_seen state_last_connected
   for item in "${candidates[@]}"; do
-    IFS='|' read -r ip name network <<< "$item"
+    IFS='|' read -r ip name verified network <<< "$item"
     state_name=""
     state_approved="false"
     state_connected="false"
     state_last_seen="0"
     state_last_connected="0"
     if IFS=$'\t' read -r state_name state_approved state_connected state_last_seen state_last_connected < <(read_peer_state "$ip" "$port" || true); then
+      :
+    elif [[ "$name" != "(unknown)" ]] &&
+      IFS=$'\t' read -r state_name state_approved state_connected state_last_seen state_last_connected < <(read_peer_state_by_verified_name "$name" "$port" || true); then
       :
     fi
     paired_label="$(format_paired_label "$state_approved")"

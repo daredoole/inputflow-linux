@@ -169,4 +169,45 @@ std::vector<std::string> CollectRecoveryCandidateHosts(const AppState& state,
     return CollectRecoveryPeerHosts(state, recoveryNames, configuredHost, port);
 }
 
+std::vector<std::string> CollectRecoveryDiscoveredHosts(const AppState& state,
+                                                       std::string_view configuredHost,
+                                                       int port,
+                                                       const std::vector<DiscoveryCandidate>& candidates) {
+    const std::vector<std::string> recoveryNames = CollectRecoveryPeerNames(state, configuredHost, port);
+    if (recoveryNames.empty()) {
+        return {};
+    }
+
+    std::vector<std::string> normalizedNames;
+    normalizedNames.reserve(recoveryNames.size());
+    for (const auto& name : recoveryNames) {
+        const std::string normalized = NormalizeHostLabel(name);
+        if (!normalized.empty() &&
+            std::find(normalizedNames.begin(), normalizedNames.end(), normalized) == normalizedNames.end()) {
+            normalizedNames.push_back(normalized);
+        }
+    }
+
+    std::vector<std::string> hosts;
+    for (const auto& candidate : candidates) {
+        if (candidate.status != DiscoveryStatus::Open ||
+            candidate.hostName.empty() ||
+            !IsIpv4Literal(candidate.ipAddress) ||
+            candidate.ipAddress == configuredHost) {
+            continue;
+        }
+
+        const std::string normalized = NormalizeHostLabel(candidate.hostName);
+        if (std::find(normalizedNames.begin(), normalizedNames.end(), normalized) == normalizedNames.end()) {
+            continue;
+        }
+        if (std::find(hosts.begin(), hosts.end(), candidate.ipAddress) != hosts.end()) {
+            continue;
+        }
+        hosts.push_back(candidate.ipAddress);
+    }
+
+    return hosts;
+}
+
 } // namespace mwb

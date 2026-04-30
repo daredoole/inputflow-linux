@@ -505,6 +505,42 @@ void TestCollectRecoveryCandidateHostsForConfiguredHostname() {
     }
 }
 
+void TestCollectRecoveryDiscoveredHostsUsesApprovedNamesOnly() {
+    mwb::AppState state;
+    state.peers.push_back(mwb::PeerState{"192.0.2.107", "WIN-PC", 15101, true, false, 100, 300});
+    state.peers.push_back(mwb::PeerState{"192.0.2.108", "OTHER-PC", 15101, true, false, 110, 400});
+
+    std::vector<mwb::DiscoveryCandidate> candidates;
+    candidates.push_back(mwb::DiscoveryCandidate{
+        "192.0.2.156",
+        "WIN-PC.local",
+        true,
+        "eth0",
+        mwb::DiscoveryStatus::Open,
+    });
+    candidates.push_back(mwb::DiscoveryCandidate{
+        "192.0.2.157",
+        "WIN-PC",
+        false,
+        "eth0",
+        mwb::DiscoveryStatus::Open,
+    });
+    candidates.push_back(mwb::DiscoveryCandidate{
+        "192.0.2.158",
+        "OTHER-PC",
+        true,
+        "eth0",
+        mwb::DiscoveryStatus::Open,
+    });
+
+    const auto hosts = mwb::CollectRecoveryDiscoveredHosts(state, "192.0.2.107", 15101, candidates);
+    Expect(hosts.size() == 2, "Discovery recovery should include discovered names matching the approved peer");
+    if (hosts.size() >= 2) {
+        Expect(hosts.front() == "192.0.2.156", "Discovery recovery should return the moved approved peer IP");
+        Expect(hosts[1] == "192.0.2.157", "Discovery recovery can try unverified names because the session key authenticates");
+    }
+}
+
 void TestDiscoveryZeroHosts() {
     mwb::DiscoveryOptions options;
     options.maxHostsPerSubnet = 0;
@@ -573,6 +609,7 @@ int main() {
     TestCollectRecoveryPeerNamesForConfiguredHostname();
     TestCollectRecoveryCandidateHostsForConfiguredIpv4();
     TestCollectRecoveryCandidateHostsForConfiguredHostname();
+    TestCollectRecoveryDiscoveredHostsUsesApprovedNamesOnly();
     TestDiscoveryZeroHosts();
     TestKScreenDoctorSingleOutputGeometry();
     TestKScreenDoctorMultiOutputBoundingBox();

@@ -962,19 +962,38 @@ std::optional<std::string> ProbeReachableIpv4Host(const std::string& host, int p
 }
 
 std::optional<std::string> TryRecoverHostFromKnownPeers(const mwb::AppConfig& config,
-                                                        const mwb::AppState& state) {
+                                                         const mwb::AppState& state) {
     const bool configuredHostIsIpv4 = mwb::IsIpv4Literal(config.host);
+    const auto knownPeerHosts = mwb::CollectRecoveryCandidateHosts(state, config.host, config.port);
+    for (const auto& host : knownPeerHosts) {
+        if (auto reachable = ProbeReachableIpv4Host(host, config.port, 250)) {
+            std::cout << "[RECOVERY] Configured peer " << config.host
+                      << " has a verified same-name address "
+                      << *reachable;
+            if (configuredHostIsIpv4) {
+                std::cout << "; using name-priority recovery before trusting the configured IP";
+            } else {
+                std::cout << "; reusing verified peer address";
+            }
+            std::cout << std::endl;
+            return reachable;
+        }
+    }
+
     if (configuredHostIsIpv4 && ProbeReachableIpv4Host(config.host, config.port, 200).has_value()) {
         return std::nullopt;
     }
 
-    for (const auto& host : mwb::CollectRecoveryCandidateHosts(state, config.host, config.port)) {
-        if (auto reachable = ProbeReachableIpv4Host(host, config.port, 250)) {
-            std::cout << "[RECOVERY] Configured peer " << config.host
-                      << " is unavailable; reusing verified peer address "
-                      << *reachable << std::endl;
-            return reachable;
-        }
+    mwb::DiscoveryOptions discoveryOptions;
+    discoveryOptions.port = static_cast<uint16_t>(config.port);
+    discoveryOptions.connectTimeoutMs = 200;
+    discoveryOptions.maxHostsPerSubnet = 256;
+    const auto candidates = mwb::DiscoverLanCandidates(discoveryOptions);
+    for (const auto& host : mwb::CollectRecoveryDiscoveredHosts(state, config.host, config.port, candidates)) {
+        std::cout << "[RECOVERY] Configured peer " << config.host
+                  << " is unavailable; using discovered address "
+                  << host << " for the approved peer name" << std::endl;
+        return host;
     }
 
     return std::nullopt;
@@ -1584,7 +1603,8 @@ int HandleDiscoverCommand(const std::string& binary, const std::vector<std::stri
                   << "  name="
                   << (candidate.hostName.empty()
                           ? "(unknown)"
-                          : (candidate.hostNameVerified ? candidate.hostName : candidate.hostName + " (unverified)"))
+                          : candidate.hostName)
+                  << "  verified=" << (candidate.hostNameVerified ? "yes" : "no")
                   << "  iface=" << candidate.interfaceName;
         std::cout << std::endl;
     }
