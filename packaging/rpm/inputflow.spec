@@ -16,6 +16,7 @@ BuildRequires:  systemd-rpm-macros
 BuildRequires:  zlib-devel
 BuildRequires:  gtk3-devel
 BuildRequires:  libayatana-appindicator3-devel
+BuildRequires:  libX11-devel
 
 Requires:       systemd
 %{?systemd_requires}

@@ -36,13 +36,17 @@ endfunction()
 # Find OpenSSL for AES decryption/encryption matching PowerToys MWB
 find_package(OpenSSL REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(X11 REQUIRED)
 
 add_executable(mwb_client
+    src/AndroidRelay.cpp
     src/AppConfig.cpp
     src/AppState.cpp
     src/ClientRuntime.cpp
     src/Discovery.cpp
     src/InputDispatcher.cpp
+    src/LibeiInputCaptureBridge.cpp
+    src/LocalAndroidInputBridge.cpp
     src/main.cpp
     src/PeerRecovery.cpp
     src/SecretStore.cpp
@@ -56,6 +60,7 @@ add_executable(mwb_client
 
 target_include_directories(mwb_client PRIVATE src)
 target_include_directories(mwb_client PRIVATE ${OPENSSL_INCLUDE_DIR})
+target_include_directories(mwb_client PRIVATE ${X11_INCLUDE_DIR})
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(mwb_client PRIVATE
@@ -78,18 +83,39 @@ target_link_libraries(mwb_client PRIVATE
     OpenSSL::SSL
     OpenSSL::Crypto
     ZLIB::ZLIB
+    ${X11_LIBRARIES}
     pthread
 )
 
 include(CTest)
 
 find_package(PkgConfig QUIET)
+if (PkgConfig_FOUND)
+    pkg_check_modules(LIBEI_INPUT_CAPTURE QUIET libei-1.0 gio-unix-2.0 gio-2.0 glib-2.0)
+    pkg_check_modules(LIBINPUT_GESTURES QUIET libinput)
+endif()
+
+if (LIBEI_INPUT_CAPTURE_FOUND)
+    target_compile_definitions(mwb_client PRIVATE MWB_HAVE_LIBEI_INPUT_CAPTURE=1)
+    target_include_directories(mwb_client PRIVATE ${LIBEI_INPUT_CAPTURE_INCLUDE_DIRS})
+    target_link_libraries(mwb_client PRIVATE ${LIBEI_INPUT_CAPTURE_LDFLAGS})
+endif()
+
+if (LIBINPUT_GESTURES_FOUND)
+    message(STATUS "Native libinput gesture monitor enabled")
+    target_compile_definitions(mwb_client PRIVATE MWB_HAVE_LIBINPUT_GESTURES=1)
+    target_include_directories(mwb_client PRIVATE ${LIBINPUT_GESTURES_INCLUDE_DIRS})
+    target_link_libraries(mwb_client PRIVATE ${LIBINPUT_GESTURES_LDFLAGS})
+else()
+    message(STATUS "Native libinput gesture monitor disabled; install libinput-devel to enable it")
+endif()
 
 if (BUILD_TESTING)
     find_program(PYTHON3_EXECUTABLE python3)
 
     add_executable(mwb_client_unit_tests
         tests/test_main.cpp
+        src/AndroidRelay.cpp
         src/AppConfig.cpp
         src/AppState.cpp
         src/Discovery.cpp
@@ -97,7 +123,7 @@ if (BUILD_TESTING)
     )
     target_include_directories(mwb_client_unit_tests PRIVATE src)
     target_compile_options(mwb_client_unit_tests PRIVATE -Wall -Wextra -Wpedantic)
-    target_link_libraries(mwb_client_unit_tests PRIVATE pthread)
+    target_link_libraries(mwb_client_unit_tests PRIVATE OpenSSL::Crypto pthread)
     mwb_apply_sanitizers(mwb_client_unit_tests)
 
     add_executable(mwb_input_mapping_tests
@@ -222,6 +248,16 @@ endif()
 if (PkgConfig_FOUND)
     pkg_check_modules(MWB_TRAY_DEPS QUIET IMPORTED_TARGET gtk+-3.0 ayatana-appindicator3-0.1)
     if (MWB_TRAY_DEPS_FOUND)
+        # Embed tray + GUI window into the main mwb_client binary
+        target_sources(mwb_client PRIVATE
+            src/TrayController.cpp
+            src/GuiMainWindow.cpp
+            src/MonitorLayoutWidget.cpp
+        )
+        target_compile_definitions(mwb_client PRIVATE MWB_HAVE_GTK_GUI=1)
+        target_link_libraries(mwb_client PRIVATE PkgConfig::MWB_TRAY_DEPS)
+
+        # Keep standalone mwb_tray as a fallback (no embedded runtime)
         add_executable(mwb_tray src/TrayController.cpp)
         target_link_libraries(mwb_tray PRIVATE PkgConfig::MWB_TRAY_DEPS)
         mwb_apply_sanitizers(mwb_tray)

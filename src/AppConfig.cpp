@@ -367,6 +367,70 @@ bool ParseAppConfig(std::string_view text, AppConfig& outConfig, std::string* er
             continue;
         }
 
+        if (key == "android_peers_enabled" || key == "android_relay_enabled") {
+            const auto parsed = ParseConfigBool(value);
+            if (!parsed.has_value()) {
+                SetError(errorMessage, "Config key 'android_peers_enabled' expects true/false.");
+                return false;
+            }
+            outConfig.androidPeersEnabled = *parsed;
+            continue;
+        }
+
+        if (key == "android_relay_port") {
+            if (!ParseAndAssignRequiredInt(value, 1, 65535, outConfig.androidRelayPort)) {
+                SetError(errorMessage, "Config key 'android_relay_port' expects an integer between 1 and 65535.");
+                return false;
+            }
+            continue;
+        }
+
+        if (key == "android_relay_secret") {
+            outConfig.androidRelaySecret = std::string(value);
+            continue;
+        }
+
+        if (key == "android_peer_name") {
+            outConfig.androidPeerName = std::string(value);
+            continue;
+        }
+
+        if (key == "android_capture_backend") {
+            const std::string backend = ToLower(std::string(value));
+            if (backend != "none" && backend != "evdev" && backend != "libei") {
+                SetError(errorMessage, "Config key 'android_capture_backend' expects none, evdev, or libei.");
+                return false;
+            }
+            outConfig.androidCaptureBackend = backend;
+            continue;
+        }
+
+        if (key == "android_layout_editor_enabled") {
+            const auto parsed = ParseConfigBool(value);
+            if (!parsed.has_value()) {
+                SetError(errorMessage, "Config key 'android_layout_editor_enabled' expects true/false.");
+                return false;
+            }
+            outConfig.androidLayoutEditorEnabled = *parsed;
+            continue;
+        }
+
+        if (key == "android_device_width") {
+            if (!ParseAndAssignRequiredInt(value, 1, 65535, outConfig.androidDeviceWidth)) {
+                SetError(errorMessage, "Config key 'android_device_width' expects an integer between 1 and 65535.");
+                return false;
+            }
+            continue;
+        }
+
+        if (key == "android_device_height") {
+            if (!ParseAndAssignRequiredInt(value, 1, 65535, outConfig.androidDeviceHeight)) {
+                SetError(errorMessage, "Config key 'android_device_height' expects an integer between 1 and 65535.");
+                return false;
+            }
+            continue;
+        }
+
         SetError(errorMessage, "Unknown config key '" + std::string(key) + "' on line " + std::to_string(lineNumber) + ".");
         return false;
     }
@@ -433,6 +497,14 @@ std::string RenderAppConfig(const AppConfig& config) {
     out << "latency_report=" << RenderBool(config.latencyReport) << '\n';
     out << "topology_enabled=" << RenderBool(config.topologyRuntimeEnabled) << '\n';
     out << "topology_file=" << config.topologyFile << '\n';
+    out << "android_peers_enabled=" << RenderBool(config.androidPeersEnabled) << '\n';
+    out << "android_relay_port=" << config.androidRelayPort << '\n';
+    out << "android_relay_secret=" << config.androidRelaySecret << '\n';
+    out << "android_peer_name=" << config.androidPeerName << '\n';
+    out << "android_capture_backend=" << config.androidCaptureBackend << '\n';
+    out << "android_layout_editor_enabled=" << RenderBool(config.androidLayoutEditorEnabled) << '\n';
+    out << "android_device_width=" << config.androidDeviceWidth << '\n';
+    out << "android_device_height=" << config.androidDeviceHeight << '\n';
     return out.str();
 }
 
@@ -452,6 +524,8 @@ std::string RenderSampleAppConfig() {
     out << "# Set auto_connect_enabled=false to keep the service idle until you re-enable it.\n";
     out << "# Set screen_width and screen_height to your local desktop size when needed.\n";
     out << "# Set topology_enabled=true and topology_file=... to enable runtime topology handoff.\n";
+    out << "# Set android_peers_enabled=true with android_relay_secret=... to relay input to Android peers.\n";
+    out << "# android_capture_backend=none keeps Android relay-only; evdev is prototype-only; libei is the planned KDE/Wayland backend.\n";
     out << RenderAppConfig(sample);
     return out.str();
 }
