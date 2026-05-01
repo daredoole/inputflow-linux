@@ -5,7 +5,7 @@ ConditionPathExists=%h/.config/mwb-client/config.ini
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/mwb_client run --config %h/.config/mwb-client/config.ini
+ExecStart=/usr/bin/mwb_client gui --config %h/.config/mwb-client/config.ini
 Restart=on-failure
 RestartSec=3s
 NoNewPrivileges=true

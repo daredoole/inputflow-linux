@@ -2,6 +2,7 @@
 #include <libayatana-appindicator/app-indicator.h>
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -12,8 +13,17 @@
 #include <optional>
 #include <string>
 #include <sys/file.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
+
+#ifdef MWB_HAVE_GTK_GUI
+#include "TrayController.h"
+#include "GuiMainWindow.h"
+#include "AppConfig.h"
+#include "AppState.h"
+#include "ClientRuntime.h"
+#endif
 
 namespace {
 
@@ -46,6 +56,10 @@ struct TrayContext {
     std::string controllerPath;
     std::string iconThemePath;
     std::string lastState;
+#ifdef MWB_HAVE_GTK_GUI
+    mwb::GuiMainWindow* mainWindow{nullptr};
+    std::atomic<bool>* stopFlag{nullptr};
+#endif
 };
 
 std::optional<std::string> RunCommandCapture(const std::string& command) {
@@ -393,7 +407,11 @@ void UpdateIndicatorVisuals(TrayContext* context, const std::string& state) {
     gtk_widget_set_sensitive(context->stopItem, active || starting);
     gtk_widget_set_sensitive(context->restartItem, active);
 
+#ifdef MWB_HAVE_GTK_GUI
+    const bool controllerAvailable = (context->mainWindow != nullptr);
+#else
     const bool controllerAvailable = !context->controllerPath.empty();
+#endif
     gtk_widget_set_sensitive(context->editSettingsItem, controllerAvailable);
     gtk_widget_set_sensitive(context->editConnectionItem, controllerAvailable);
     gtk_widget_set_sensitive(context->healthCheckItem, controllerAvailable);
@@ -472,46 +490,73 @@ gboolean RefreshStatus(gpointer userData) {
 
 void OnOpenController(GtkMenuItem*, gpointer userData) {
     auto* context = static_cast<TrayContext*>(userData);
+#ifdef MWB_HAVE_GTK_GUI
+    if (context->mainWindow) { context->mainWindow->ShowTab(0); return; }
+#endif
     (void)LaunchController(context);
 }
 
 void OnEditSettings(GtkMenuItem*, gpointer userData) {
     auto* context = static_cast<TrayContext*>(userData);
+#ifdef MWB_HAVE_GTK_GUI
+    if (context->mainWindow) { context->mainWindow->ShowTab(1); return; }
+#endif
     (void)LaunchController(context, {"settings"});
 }
 
 void OnEditConnectionBehavior(GtkMenuItem*, gpointer userData) {
     auto* context = static_cast<TrayContext*>(userData);
+#ifdef MWB_HAVE_GTK_GUI
+    if (context->mainWindow) { context->mainWindow->ShowTab(1); return; }
+#endif
     (void)LaunchController(context, {"connection"});
 }
 
 void OnHealthCheck(GtkMenuItem*, gpointer userData) {
     auto* context = static_cast<TrayContext*>(userData);
+#ifdef MWB_HAVE_GTK_GUI
+    if (context->mainWindow) { context->mainWindow->ShowTab(0); return; }
+#endif
     (void)LaunchController(context, {"health-check"});
 }
 
 void OnDiagnosticsBundle(GtkMenuItem*, gpointer userData) {
     auto* context = static_cast<TrayContext*>(userData);
+#ifdef MWB_HAVE_GTK_GUI
+    if (context->mainWindow) { context->mainWindow->ShowTab(0); return; }
+#endif
     (void)LaunchController(context, {"diagnostics-bundle"});
 }
 
 void OnConnectionQuality(GtkMenuItem*, gpointer userData) {
     auto* context = static_cast<TrayContext*>(userData);
+#ifdef MWB_HAVE_GTK_GUI
+    if (context->mainWindow) { context->mainWindow->ShowTab(0); return; }
+#endif
     (void)LaunchController(context, {"connection-quality"});
 }
 
 void OnGuidedPairing(GtkMenuItem*, gpointer userData) {
     auto* context = static_cast<TrayContext*>(userData);
+#ifdef MWB_HAVE_GTK_GUI
+    if (context->mainWindow) { context->mainWindow->ShowTab(1); return; }
+#endif
     (void)LaunchController(context, {"guided-pairing"});
 }
 
 void OnDiscoverPeers(GtkMenuItem*, gpointer userData) {
     auto* context = static_cast<TrayContext*>(userData);
+#ifdef MWB_HAVE_GTK_GUI
+    if (context->mainWindow) { context->mainWindow->ShowTab(0); return; }
+#endif
     (void)LaunchController(context, {"discover"});
 }
 
 void OnShowPeers(GtkMenuItem*, gpointer userData) {
     auto* context = static_cast<TrayContext*>(userData);
+#ifdef MWB_HAVE_GTK_GUI
+    if (context->mainWindow) { context->mainWindow->ShowTab(0); return; }
+#endif
     (void)LaunchController(context, {"peers"});
 }
 
@@ -532,6 +577,9 @@ void OnRestartService(GtkMenuItem*, gpointer userData) {
 
 void OnShowStatus(GtkMenuItem*, gpointer userData) {
     auto* context = static_cast<TrayContext*>(userData);
+#ifdef MWB_HAVE_GTK_GUI
+    if (context->mainWindow) { context->mainWindow->ShowTab(0); return; }
+#endif
     (void)LaunchController(context, {"status"});
 }
 
@@ -542,10 +590,26 @@ void OnShowTrayHelp(GtkMenuItem*, gpointer userData) {
 
 void OnInstallDesktopEntries(GtkMenuItem*, gpointer userData) {
     auto* context = static_cast<TrayContext*>(userData);
+#ifdef MWB_HAVE_GTK_GUI
+    if (context->mainWindow) { context->mainWindow->ShowTab(1); return; }
+#endif
     (void)LaunchController(context, {"install-desktop-entry"});
 }
 
-void OnQuit(GtkMenuItem*, gpointer) {
+void OnOpenMonitorLayout(GtkMenuItem*, gpointer userData) {
+    auto* context = static_cast<TrayContext*>(userData);
+#ifdef MWB_HAVE_GTK_GUI
+    if (context->mainWindow) { context->mainWindow->ShowTab(2); return; }
+#endif
+}
+
+void OnQuit(GtkMenuItem*, gpointer userData) {
+#ifdef MWB_HAVE_GTK_GUI
+    auto* context = static_cast<TrayContext*>(userData);
+    if (context->stopFlag) context->stopFlag->store(true);
+#else
+    (void)userData;
+#endif
     gtk_main_quit();
 }
 
@@ -558,46 +622,41 @@ GtkWidget* AddMenuItem(GtkWidget* menu, const char* label, GCallback callback, g
 
 } // namespace
 
-int main(int argc, char** argv) {
-    const int instanceLockFd = AcquireSingleInstanceLock();
-    if (instanceLockFd == -2) {
-        return 0;
-    }
+// ---- shared tray-building helper (used by both standalone and embedded) -----
 
-    g_set_prgname(kIndicatorId);
-    g_set_application_name(kAppName);
+namespace {
 
-    gtk_init(&argc, &argv);
-
-    TrayContext context;
-    context.controllerPath = ResolveControllerPath();
-    context.iconThemePath = ResolveIconThemePath();
-
+void BuildTrayMenu(TrayContext& context) {
     GtkWidget* menu = gtk_menu_new();
     context.statusItem = gtk_menu_item_new_with_label("Service: Checking...");
     gtk_widget_set_sensitive(context.statusItem, FALSE);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), context.statusItem);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
-    context.editSettingsItem = AddMenuItem(menu, "Settings", G_CALLBACK(OnEditSettings), &context);
-    context.editConnectionItem = AddMenuItem(menu, "Connection Behavior", G_CALLBACK(OnEditConnectionBehavior), &context);
-    context.healthCheckItem = AddMenuItem(menu, "Health Check", G_CALLBACK(OnHealthCheck), &context);
-    context.diagnosticsBundleItem = AddMenuItem(menu, "Diagnostics Bundle", G_CALLBACK(OnDiagnosticsBundle), &context);
-    context.connectionQualityItem = AddMenuItem(menu, "Connection Quality", G_CALLBACK(OnConnectionQuality), &context);
-    context.guidedPairingItem = AddMenuItem(menu, "Guided Pairing", G_CALLBACK(OnGuidedPairing), &context);
-    context.discoverPeersItem = AddMenuItem(menu, "Discover Peers", G_CALLBACK(OnDiscoverPeers), &context);
-    context.showPeersItem = AddMenuItem(menu, "Known Peers", G_CALLBACK(OnShowPeers), &context);
+#ifdef MWB_HAVE_GTK_GUI
+    AddMenuItem(menu, "Open Dashboard", G_CALLBACK(OnOpenController), &context);
+    AddMenuItem(menu, "Monitor Layout", G_CALLBACK(OnOpenMonitorLayout), &context);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+#endif
+
+    context.editSettingsItem         = AddMenuItem(menu, "Settings",            G_CALLBACK(OnEditSettings),          &context);
+    context.editConnectionItem        = AddMenuItem(menu, "Connection Behavior", G_CALLBACK(OnEditConnectionBehavior),&context);
+    context.healthCheckItem           = AddMenuItem(menu, "Health Check",        G_CALLBACK(OnHealthCheck),           &context);
+    context.diagnosticsBundleItem     = AddMenuItem(menu, "Diagnostics Bundle",  G_CALLBACK(OnDiagnosticsBundle),     &context);
+    context.connectionQualityItem     = AddMenuItem(menu, "Connection Quality",  G_CALLBACK(OnConnectionQuality),     &context);
+    context.guidedPairingItem         = AddMenuItem(menu, "Guided Pairing",      G_CALLBACK(OnGuidedPairing),         &context);
+    context.discoverPeersItem         = AddMenuItem(menu, "Discover Peers",      G_CALLBACK(OnDiscoverPeers),         &context);
+    context.showPeersItem             = AddMenuItem(menu, "Known Peers",         G_CALLBACK(OnShowPeers),             &context);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
-    context.startItem = AddMenuItem(menu, "Start Service", G_CALLBACK(OnStartService), &context);
-    context.stopItem = AddMenuItem(menu, "Stop Service", G_CALLBACK(OnStopService), &context);
+    context.startItem   = AddMenuItem(menu, "Start Service",   G_CALLBACK(OnStartService),   &context);
+    context.stopItem    = AddMenuItem(menu, "Stop Service",    G_CALLBACK(OnStopService),    &context);
     context.restartItem = AddMenuItem(menu, "Restart Service", G_CALLBACK(OnRestartService), &context);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
-
-    context.showStatusItem = AddMenuItem(menu, "Show Service Details", G_CALLBACK(OnShowStatus), &context);
-    context.installDesktopEntriesItem = AddMenuItem(menu, "Install Desktop Entries", G_CALLBACK(OnInstallDesktopEntries), &context);
-    context.trayHelpItem = AddMenuItem(menu, "Tray Visibility Help", G_CALLBACK(OnShowTrayHelp), &context);
+    context.showStatusItem           = AddMenuItem(menu, "Show Service Details",    G_CALLBACK(OnShowStatus),            &context);
+    context.installDesktopEntriesItem = AddMenuItem(menu, "Install Desktop Entries", G_CALLBACK(OnInstallDesktopEntries),&context);
+    context.trayHelpItem              = AddMenuItem(menu, "Tray Visibility Help",    G_CALLBACK(OnShowTrayHelp),          &context);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
     AddMenuItem(menu, "Quit", G_CALLBACK(OnQuit), &context);
@@ -621,6 +680,30 @@ int main(int argc, char** argv) {
     UpdateIndicatorVisuals(&context, QueryServiceState());
     app_indicator_set_status(context.indicator, APP_INDICATOR_STATUS_ACTIVE);
     g_timeout_add_seconds(30, RefreshStatus, &context);
+}
+
+} // namespace
+
+// ---- standalone mwb_tray entry point (no embedded runtime) -----------------
+
+#ifndef MWB_HAVE_GTK_GUI
+int main(int argc, char** argv) {
+    const int instanceLockFd = AcquireSingleInstanceLock();
+    if (instanceLockFd == -2) {
+        return 0;
+    }
+
+    g_set_prgname(kIndicatorId);
+    g_set_application_name(kAppName);
+
+    gtk_init(&argc, &argv);
+
+    TrayContext context;
+    context.controllerPath = ResolveControllerPath();
+    context.iconThemePath  = ResolveIconThemePath();
+
+    BuildTrayMenu(context);
+    MaybeShowStartupHint(context);
 
     gtk_main();
     if (instanceLockFd >= 0) {
@@ -628,3 +711,155 @@ int main(int argc, char** argv) {
     }
     return 0;
 }
+#endif  // !MWB_HAVE_GTK_GUI
+
+// ---- embedded GUI + runtime entry point (mwb_client gui subcommand) --------
+
+#ifdef MWB_HAVE_GTK_GUI
+namespace mwb {
+
+namespace {
+
+struct StatusUpdate {
+    TrayContext* tray;
+    GuiMainWindow* win;
+    std::string state;
+    std::string detail;
+};
+
+gboolean ApplyStatusOnMainThread(gpointer data) {
+    auto* upd = static_cast<StatusUpdate*>(data);
+    if (upd->win)  upd->win->UpdateStatus(upd->state, upd->detail);
+    if (upd->tray) UpdateIndicatorVisuals(upd->tray, upd->state);
+    delete upd;
+    return G_SOURCE_REMOVE;
+}
+
+void PostStatus(TrayContext* tray, GuiMainWindow* win,
+                const std::string& state, const std::string& detail) {
+    auto* upd = new StatusUpdate{tray, win, state, detail};
+    g_idle_add(ApplyStatusOnMainThread, upd);
+}
+
+} // namespace
+
+int RunTrayAndGui(const std::string& binary,
+                  const std::vector<std::string>& args,
+                  const AppConfig& config,
+                  const std::string& configPath,
+                  const std::string& statePath) {
+    const int instanceLockFd = AcquireSingleInstanceLock();
+    if (instanceLockFd == -2) {
+        std::cerr << "InputFlow GUI is already running." << std::endl;
+        return 0;
+    }
+
+    g_set_prgname(kIndicatorId);
+    g_set_application_name(kAppName);
+
+    // GTK already initialised by caller via gtk_init_check
+
+    // Shared stop flag for daemon thread
+    std::atomic<bool> stopFlag{false};
+
+    // Build GUI window
+    GuiMainWindow* mainWin = CreateMainWindow(
+        config, configPath,
+        [](const AppConfig&) { /* settings saved; daemon will reload on restart */ });
+
+    // Build tray
+    TrayContext context;
+    context.iconThemePath = ResolveIconThemePath();
+    context.mainWindow    = mainWin;
+    context.stopFlag      = &stopFlag;
+
+    BuildTrayMenu(context);
+
+    // Seed status
+    PostStatus(&context, mainWin, QueryServiceState(), "");
+
+    // Start daemon runtime in background thread
+    AppConfig runtimeConfig = config;
+    std::thread daemonThread([&]() {
+        // Minimal state/option wiring (mirrors RunClient in main.cpp)
+        AppState state;
+        (void)EnsureLocalMachineId(state);
+
+        RuntimeOptions options;
+        options.host                   = runtimeConfig.host;
+        options.key                    = runtimeConfig.key;
+        options.port                   = runtimeConfig.port;
+        options.clipboardEnabled       = runtimeConfig.clipboardEnabled;
+        options.clipboardSendEnabled   = runtimeConfig.clipboardSendEnabled;
+        options.clipboardForcePoll     = runtimeConfig.clipboardForcePoll;
+        options.clipboardPollMs        = runtimeConfig.clipboardPollMs;
+        options.autoConnectEnabled     = runtimeConfig.autoConnectEnabled;
+        options.reconnectInitialBackoffMs = runtimeConfig.reconnectInitialBackoffMs;
+        options.reconnectMaxBackoffMs  = runtimeConfig.reconnectMaxBackoffMs;
+        options.reconnectIdleRetryMs   = runtimeConfig.reconnectIdleRetryMs;
+        options.screenWidth            = runtimeConfig.screenWidth;
+        options.screenHeight           = runtimeConfig.screenHeight;
+        options.mprisMediaKeysEnabled  = runtimeConfig.mprisMediaKeysEnabled;
+        options.mprisPlayer            = runtimeConfig.mprisPlayer;
+        options.localMachineId         = state.localMachineId;
+        options.localMachineName       = runtimeConfig.machineName;
+        options.latencyReport          = runtimeConfig.latencyReport;
+        options.topologyRuntimeEnabled = runtimeConfig.topologyRuntimeEnabled;
+        options.topologyFilePath       = runtimeConfig.topologyFile;
+        options.androidCaptureBackend  = runtimeConfig.androidCaptureBackend;
+        options.androidRelay.enabled           = runtimeConfig.androidPeersEnabled;
+        options.androidRelay.port              = runtimeConfig.androidRelayPort;
+        options.androidRelay.secret            = runtimeConfig.androidRelaySecret;
+        options.androidRelay.peerName          = runtimeConfig.androidPeerName;
+        options.androidRelay.layoutEditorEnabled = runtimeConfig.androidLayoutEditorEnabled;
+        options.androidRelay.androidDeviceWidth  = runtimeConfig.androidDeviceWidth;
+        options.androidRelay.androidDeviceHeight = runtimeConfig.androidDeviceHeight;
+
+        options.onSessionEstablished = [&](const std::string& host, int port,
+                                           const std::string& remoteName, uint32_t, uint32_t) {
+            PostStatus(&context, mainWin, "active", host + ":" + std::to_string(port) + " (" + remoteName + ")");
+            if (mainWin) {
+                auto* logMsg = new std::string("Connected to " + host + ":" + std::to_string(port));
+                g_idle_add([](gpointer p) -> gboolean {
+                    auto* msg = static_cast<std::string*>(p);
+                    // mainWin captured by pointer — safe since GTK window outlives runtime
+                    delete msg;
+                    return G_SOURCE_REMOVE;
+                }, logMsg);
+            }
+        };
+        options.onSessionDisconnected = [&]() {
+            PostStatus(&context, mainWin, "inactive", "Disconnected");
+        };
+
+        ClientRuntime runtime(std::move(options));
+
+        // Stopper thread: when GTK quits it sets stopFlag → we call runtime.Stop()
+        std::thread stopper([&]() {
+            while (!stopFlag.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            runtime.Stop();
+        });
+
+        (void)runtime.Run();
+
+        stopFlag.store(true);
+        if (stopper.joinable()) stopper.join();
+    });
+
+    gtk_main();
+
+    stopFlag.store(true);
+    if (daemonThread.joinable()) {
+        daemonThread.join();
+    }
+    if (instanceLockFd >= 0) {
+        close(instanceLockFd);
+    }
+    delete mainWin;
+    return 0;
+}
+
+} // namespace mwb
+#endif  // MWB_HAVE_GTK_GUI

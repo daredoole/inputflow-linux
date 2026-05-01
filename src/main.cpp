@@ -36,6 +36,11 @@
 #include "SecretStore.h"
 #include "TopologyModel.h"
 
+#ifdef MWB_HAVE_GTK_GUI
+#include <gtk/gtk.h>
+#include "TrayController.h"
+#endif
+
 namespace {
 
 constexpr int kDefaultPort = 15101;
@@ -68,6 +73,7 @@ void PrintGeneralUsage(std::ostream& out, const char* argv0) {
     out << "       " << binary << " install-user-service [--config PATH] [--unit PATH] [--force]\n";
     out << "       " << binary << " secret-store [--config PATH] --secret-id ID [--key KEY | --key-file PATH | --stdin]\n";
     out << "       " << binary << " secret-clear [--config PATH] [--secret-id ID]\n";
+    out << "       " << binary << " gui [--config PATH] [--state PATH]   — start combined tray + GUI (falls back to run if no display)\n";
     out << "Connection policy: auto_connect_enabled=true|false, reconnect_initial_backoff_ms, reconnect_max_backoff_ms, reconnect_idle_retry_ms in config\n";
     out << "Media keys: mpris_media_keys_enabled=true|false, mpris_player=PLAYER in config\n";
     out << "Set latency_report=true, MWB_LATENCY_REPORT=1, or use --latency-report to print client-side input queue/inject timing on shutdown\n";
@@ -2699,6 +2705,37 @@ int HandleAndroidPairCommand(const std::vector<std::string>& args) {
     return 0;
 }
 
+#ifdef MWB_HAVE_GTK_GUI
+int HandleGuiCommand(const std::string& binary, const std::vector<std::string>& args) {
+    // Resolve config path from args (same parsing as HandleRunCommand)
+    std::filesystem::path configPath = mwb::DefaultConfigPath();
+    std::filesystem::path statePath  = mwb::DefaultStatePath();
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--config" && i + 1 < args.size()) configPath = args[++i];
+        else if (args[i] == "--state" && i + 1 < args.size()) statePath = args[++i];
+    }
+
+    mwb::AppConfig config;
+    if (std::filesystem::exists(configPath)) {
+        std::string err;
+        (void)mwb::LoadConfigFile(configPath, config, err);
+    }
+
+    // Try to initialise GTK; fall back to headless run if no display
+    int fakeArgc = 1;
+    const std::string binaryStr = binary;
+    char* fakeArgvArr[] = {const_cast<char*>(binaryStr.c_str()), nullptr};
+    char** fakeArgv = fakeArgvArr;
+    if (!gtk_init_check(&fakeArgc, &fakeArgv)) {
+        std::cerr << "No display available; running headless." << std::endl;
+        return HandleRunCommand(binary, args);
+    }
+
+    return mwb::RunTrayAndGui(binary, args, config,
+                              configPath.string(), statePath.string());
+}
+#endif
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2719,6 +2756,8 @@ int main(int argc, char** argv) {
         std::string(argv[1]) != "install-user-service" &&
         std::string(argv[1]) != "secret-store" &&
         std::string(argv[1]) != "secret-clear" &&
+        std::string(argv[1]) != "gui" &&
+        std::string(argv[1]) != "tray" &&
         std::string(argv[1]).rfind("--", 0) != 0) {
         return HandleLegacyRun(argc, argv);
     }
@@ -2762,6 +2801,12 @@ int main(int argc, char** argv) {
     if (command == "secret-clear") {
         return HandleSecretClearCommand(args);
     }
+
+#ifdef MWB_HAVE_GTK_GUI
+    if (command == "gui" || command == "tray") {
+        return HandleGuiCommand(binary, args);
+    }
+#endif
 
     std::cerr << "ERR: Unknown command: " << command << std::endl;
     PrintGeneralUsage(std::cerr, argv[0]);

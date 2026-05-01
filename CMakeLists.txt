@@ -248,6 +248,16 @@ endif()
 if (PkgConfig_FOUND)
     pkg_check_modules(MWB_TRAY_DEPS QUIET IMPORTED_TARGET gtk+-3.0 ayatana-appindicator3-0.1)
     if (MWB_TRAY_DEPS_FOUND)
+        # Embed tray + GUI window into the main mwb_client binary
+        target_sources(mwb_client PRIVATE
+            src/TrayController.cpp
+            src/GuiMainWindow.cpp
+            src/MonitorLayoutWidget.cpp
+        )
+        target_compile_definitions(mwb_client PRIVATE MWB_HAVE_GTK_GUI=1)
+        target_link_libraries(mwb_client PRIVATE PkgConfig::MWB_TRAY_DEPS)
+
+        # Keep standalone mwb_tray as a fallback (no embedded runtime)
         add_executable(mwb_tray src/TrayController.cpp)
         target_link_libraries(mwb_tray PRIVATE PkgConfig::MWB_TRAY_DEPS)
         mwb_apply_sanitizers(mwb_tray)
