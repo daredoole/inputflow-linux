@@ -35,6 +35,7 @@ std::filesystem::path MakeTempPath(const std::string& name) {
 
 void TestAppConfigRoundTrip() {
     mwb::AppConfig config;
+    config.connectionMode = mwb::ConnectionMode::Hybrid;
     config.host = "192.0.2.107";
     config.key = "secret";
     config.machineName = "fedora";
@@ -64,6 +65,8 @@ void TestAppConfigRoundTrip() {
     std::string error;
     Expect(mwb::SaveConfigFile(path, config, error), "SaveConfigFile should succeed");
     const std::string rendered = mwb::RenderAppConfig(config);
+    ExpectRenderedLine(rendered, "connection_mode", "hybrid",
+                       "Rendered config should keep connection_mode");
     ExpectRenderedLine(rendered, "key", "secret", "Rendered config should keep the inline key");
     ExpectRenderedLine(rendered, "key_file", "", "Rendered config should keep an empty key_file entry for inline keys");
     ExpectRenderedLine(rendered, "key_secret_id", "",
@@ -99,10 +102,13 @@ void TestAppConfigRoundTrip() {
 
     mwb::AppConfig loaded;
     Expect(mwb::LoadConfigFile(path, loaded, error), "LoadConfigFile should succeed");
+    Expect(loaded.connectionMode == config.connectionMode, "Config connectionMode round-trip");
     Expect(loaded.host == config.host, "Config host round-trip");
     Expect(loaded.key == config.key, "Config key round-trip");
     Expect(loaded.keyFile.empty(), "Config key_file should stay empty for inline keys");
     const std::string loadedRendered = mwb::RenderAppConfig(loaded);
+    ExpectRenderedLine(loadedRendered, "connection_mode", "hybrid",
+                       "Loaded config should keep connection_mode");
     ExpectRenderedLine(loadedRendered, "key", "secret", "Loaded config should keep the inline key");
     ExpectRenderedLine(loadedRendered, "key_file", "", "Loaded config should keep an empty key_file entry");
     ExpectRenderedLine(loadedRendered, "key_secret_id", "",
@@ -309,6 +315,24 @@ void TestAppConfigConnectionPolicyRoundTrip() {
 
     std::error_code ignore;
     std::filesystem::remove(path, ignore);
+}
+
+void TestAppConfigConnectionModeAliases() {
+    mwb::AppConfig config;
+    std::string error;
+
+    Expect(mwb::ParseAppConfig("connection_mode=inputflow\n", config, &error),
+           "ParseAppConfig should accept inputflow connection mode");
+    Expect(config.connectionMode == mwb::ConnectionMode::InputFlow,
+           "inputflow connection mode should parse");
+
+    Expect(mwb::ParseAppConfig("connection_mode=both\n", config, &error),
+           "ParseAppConfig should accept both as hybrid alias");
+    Expect(config.connectionMode == mwb::ConnectionMode::Hybrid,
+           "both connection mode alias should parse as hybrid");
+
+    Expect(!mwb::ParseAppConfig("connection_mode=bluetooth\n", config, &error),
+           "ParseAppConfig should reject unknown connection mode");
 }
 
 void TestParseAppConfigKeyFileOverridesInlineKey() {
@@ -644,6 +668,7 @@ int main() {
     TestAppConfigKeyFileRoundTrip();
     TestAppConfigKeySecretIdRoundTrip();
     TestAppConfigConnectionPolicyRoundTrip();
+    TestAppConfigConnectionModeAliases();
     TestParseAppConfigKeyFileOverridesInlineKey();
     TestParseAppConfigKeySecretIdOverridesKeyAndKeyFile();
     TestAppStateRoundTrip();

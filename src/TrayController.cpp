@@ -804,10 +804,12 @@ int RunTrayAndGui(const std::string& binary,
         options.localMachineId         = state.localMachineId;
         options.localMachineName       = runtimeConfig.machineName;
         options.latencyReport          = runtimeConfig.latencyReport;
+        options.powerToysCompatibilityEnabled = PowerToysCompatibilityEnabled(runtimeConfig.connectionMode);
+        options.inputFlowPeersEnabled  = InputFlowPeersEnabled(runtimeConfig.connectionMode);
         options.topologyRuntimeEnabled = runtimeConfig.topologyRuntimeEnabled;
         options.topologyFilePath       = runtimeConfig.topologyFile;
         options.androidCaptureBackend  = runtimeConfig.androidCaptureBackend;
-        options.androidRelay.enabled           = runtimeConfig.androidPeersEnabled;
+        options.androidRelay.enabled           = options.inputFlowPeersEnabled && runtimeConfig.androidPeersEnabled;
         options.androidRelay.port              = runtimeConfig.androidRelayPort;
         options.androidRelay.secret            = runtimeConfig.androidRelaySecret;
         options.androidRelay.peerName          = runtimeConfig.androidPeerName;
