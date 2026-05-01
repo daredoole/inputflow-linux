@@ -1,10 +1,11 @@
 #include "LibeiInputCaptureBridge.h"
 
+#include <linux/input-event-codes.h>
+
 #if defined(MWB_HAVE_LIBEI_INPUT_CAPTURE)
 #include <gio/gio.h>
 #include <gio/gunixfdlist.h>
 #include <libei.h>
-#include <linux/input-event-codes.h>
 #endif
 
 #if defined(MWB_HAVE_LIBINPUT_GESTURES)
