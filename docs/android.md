@@ -7,6 +7,7 @@ InputFlow can expose an experimental Android controlled-peer relay. The Linux cl
 Add these keys to `~/.config/mwb-client/config.ini`:
 
 ```ini
+connection_mode=hybrid
 android_peers_enabled=true
 android_relay_port=15102
 android_relay_secret=replace-with-a-long-random-secret
@@ -16,7 +17,7 @@ android_capture_backend=none
 
 Then enable topology and add a machine/display whose machine id matches `android_peer_name`. When a cross-machine topology edge targets that machine, InputFlow forwards mouse events to Android. Keyboard events follow while the Android relay is active.
 
-The relay is disabled by default. If `android_relay_secret` is empty, the relay does not start.
+The relay is disabled by default. If `android_relay_secret` is empty, the relay does not start. Use `connection_mode=inputflow` for Android-only testing without a Windows PowerToys host, or `connection_mode=hybrid` when Windows and Android should both be active.
 
 `android_capture_backend` controls Linux-local physical mouse capture:
 

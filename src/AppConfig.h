@@ -7,7 +7,14 @@
 
 namespace mwb {
 
+enum class ConnectionMode {
+    PowerToys,
+    InputFlow,
+    Hybrid,
+};
+
 struct AppConfig {
+    ConnectionMode connectionMode{ConnectionMode::PowerToys};
     std::string host;
     std::string key;
     std::string keyFile;
@@ -40,6 +47,11 @@ struct AppConfig {
 };
 
 AppConfig LoadDefaultAppConfig();
+
+std::optional<ConnectionMode> ParseConnectionMode(std::string_view value);
+std::string_view ConnectionModeName(ConnectionMode mode);
+bool PowerToysCompatibilityEnabled(ConnectionMode mode);
+bool InputFlowPeersEnabled(ConnectionMode mode);
 
 std::optional<bool> ParseConfigBool(std::string_view value);
 std::optional<int> ParseConfigInt(std::string_view value);

@@ -6,6 +6,7 @@ SERVICE_NAME="mwb-client.service"
 CONFIG_PATH="${XDG_CONFIG_HOME:-$HOME/.config}/mwb-client/config.ini"
 STATE_PATH="${XDG_STATE_HOME:-$HOME/.local/state}/mwb-client/state.ini"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONNECTION_MODE_CONFIG_KEY="${MWB_CONNECTION_MODE_CONFIG_KEY:-connection_mode}"
 AUTO_CONNECT_CONFIG_KEY="${MWB_AUTO_CONNECT_CONFIG_KEY:-auto_connect_enabled}"
 RECONNECT_INITIAL_CONFIG_KEY="${MWB_RECONNECT_INITIAL_CONFIG_KEY:-reconnect_initial_backoff_ms}"
 RECONNECT_MAX_CONFIG_KEY="${MWB_RECONNECT_MAX_CONFIG_KEY:-reconnect_max_backoff_ms}"
@@ -146,6 +147,38 @@ format_epoch_label() {
   date -d "@$epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '%s' "$epoch"
 }
 
+read_connection_mode() {
+  local mode
+  mode="$(read_config_value "$CONNECTION_MODE_CONFIG_KEY")"
+  case "$mode" in
+    inputflow|hybrid|powertoys) printf '%s\n' "$mode" ;;
+    power_toys|mwb|windows) printf 'powertoys\n' ;;
+    native|peer|inputflow_peers) printf 'inputflow\n' ;;
+    both) printf 'hybrid\n' ;;
+    *) printf 'powertoys\n' ;;
+  esac
+}
+
+connection_mode_label() {
+  case "$1" in
+    inputflow) printf 'InputFlow peers' ;;
+    hybrid) printf 'Hybrid' ;;
+    *) printf 'PowerToys compatibility' ;;
+  esac
+}
+
+connection_mode_from_label() {
+  case "$1" in
+    "InputFlow peers") printf 'inputflow\n' ;;
+    "Hybrid") printf 'hybrid\n' ;;
+    *) printf 'powertoys\n' ;;
+  esac
+}
+
+connection_mode_requires_windows() {
+  [[ "$(read_connection_mode)" != "inputflow" ]]
+}
+
 strip_matching_quotes() {
   local value="$1"
   if [[ "${#value}" -ge 2 ]]; then
@@ -219,7 +252,7 @@ canonical_managed_key() {
   local candidate
 
   case "$input_key" in
-    host|key|key_file|machine_name|port|screen_width|screen_height|clipboard_enabled|clipboard_send_enabled|clipboard_force_poll|clipboard_poll_ms|"$MPRIS_MEDIA_KEYS_CONFIG_KEY"|"$MPRIS_PLAYER_CONFIG_KEY"|"$LATENCY_REPORT_CONFIG_KEY"|"$AUTO_CONNECT_CONFIG_KEY"|"$RECONNECT_INITIAL_CONFIG_KEY"|"$RECONNECT_MAX_CONFIG_KEY"|"$RECONNECT_IDLE_CONFIG_KEY")
+    "$CONNECTION_MODE_CONFIG_KEY"|host|key|key_file|machine_name|port|screen_width|screen_height|clipboard_enabled|clipboard_send_enabled|clipboard_force_poll|clipboard_poll_ms|"$MPRIS_MEDIA_KEYS_CONFIG_KEY"|"$MPRIS_PLAYER_CONFIG_KEY"|"$LATENCY_REPORT_CONFIG_KEY"|"$AUTO_CONNECT_CONFIG_KEY"|"$RECONNECT_INITIAL_CONFIG_KEY"|"$RECONNECT_MAX_CONFIG_KEY"|"$RECONNECT_IDLE_CONFIG_KEY")
       printf '%s\n' "$input_key"
       return 0
       ;;
@@ -297,10 +330,12 @@ disable_topology_config() {
 write_config() {
   local host="$1" key="$2" key_file="$3" secret_id="$4" machine_name="$5" port="$6" auto_connect_enabled="$7" reconnect_initial_backoff_ms="$8" reconnect_max_backoff_ms="$9" reconnect_idle_retry_ms="${10}" clipboard_enabled="${11}" clipboard_send_enabled="${12}" clipboard_force_poll="${13}" clipboard_poll_ms="${14}" screen_width="${15}" screen_height="${16}" mpris_media_keys_enabled="${17}" mpris_player="${18}" latency_report="${19}"
   local secret_key_name="${20:-$(detect_secret_id_key_name)}"
+  local connection_mode="${21:-$(read_connection_mode)}"
   local tmp_path line existing_key managed_key
   local -a existing_lines=()
-  local -a ordered_keys=("host" "key" "key_file" "$secret_key_name" "machine_name" "port" "screen_width" "screen_height" "$AUTO_CONNECT_CONFIG_KEY" "$RECONNECT_INITIAL_CONFIG_KEY" "$RECONNECT_MAX_CONFIG_KEY" "$RECONNECT_IDLE_CONFIG_KEY" "clipboard_enabled" "clipboard_send_enabled" "clipboard_force_poll" "clipboard_poll_ms" "$MPRIS_MEDIA_KEYS_CONFIG_KEY" "$MPRIS_PLAYER_CONFIG_KEY" "$LATENCY_REPORT_CONFIG_KEY")
+  local -a ordered_keys=("$CONNECTION_MODE_CONFIG_KEY" "host" "key" "key_file" "$secret_key_name" "machine_name" "port" "screen_width" "screen_height" "$AUTO_CONNECT_CONFIG_KEY" "$RECONNECT_INITIAL_CONFIG_KEY" "$RECONNECT_MAX_CONFIG_KEY" "$RECONNECT_IDLE_CONFIG_KEY" "clipboard_enabled" "clipboard_send_enabled" "clipboard_force_poll" "clipboard_poll_ms" "$MPRIS_MEDIA_KEYS_CONFIG_KEY" "$MPRIS_PLAYER_CONFIG_KEY" "$LATENCY_REPORT_CONFIG_KEY")
   local -A values=(
+    ["$CONNECTION_MODE_CONFIG_KEY"]="$connection_mode"
     [host]="$host"
     [key]="$key"
     [key_file]="$key_file"
@@ -770,8 +805,9 @@ service_state_label() {
 }
 
 menu_summary_text() {
-  local state host key key_file secret_id auth_label auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms topology_enabled topology_file topology_label
+  local state connection_mode host key key_file secret_id auth_label auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms topology_enabled topology_file topology_label
   state="$(service_state)"
+  connection_mode="$(read_connection_mode)"
   host="$(read_config_value host)"
   key="$(read_config_value key)"
   key_file="$(read_config_value key_file)"
@@ -788,8 +824,9 @@ menu_summary_text() {
     topology_label="Disabled"
   fi
 
-  printf 'Status: %s\nHost: %s\nAuth: %s\nReconnect: %s\nTopology: %s' \
+  printf 'Status: %s\nMode: %s\nHost: %s\nAuth: %s\nReconnect: %s\nTopology: %s' \
     "$(service_state_label "$state")" \
+    "$(connection_mode_label "$connection_mode")" \
     "$host" \
     "$auth_label" \
     "$( [[ "$auto_connect_enabled" == "true" ]] && printf 'Auto' || printf 'Manual' )" \
@@ -819,7 +856,8 @@ probe_tcp_port() {
 
 health_check() {
   require_client_binary || return 1
-  local host port key key_file secret_id auth_count service_status health_text doctor_text
+  local connection_mode host port key key_file secret_id auth_count service_status health_text doctor_text
+  connection_mode="$(read_connection_mode)"
   host="$(read_config_value host)"
   port="$(read_config_value port)"; [[ -n "$port" ]] || port="15101"
   key="$(read_config_value key)"
@@ -832,9 +870,15 @@ health_check() {
     append_check_line "$([[ -f "$CONFIG_PATH" ]] && printf OK || printf WARN)" "config file" "$CONFIG_PATH"
     append_check_line "$([[ -e /dev/uinput ]] && printf OK || printf WARN)" "uinput device" "$([[ -e /dev/uinput ]] && ls -l /dev/uinput 2>/dev/null || printf 'missing; install udev rule and reload')"
     append_check_line "$([[ "$service_status" == "active" ]] && printf OK || printf WARN)" "user service" "$(service_state_label "$service_status")"
-    append_check_line "$([[ -n "$host" ]] && printf OK || printf WARN)" "Windows host" "${host:-not configured}"
-    append_check_line "$([[ "$auth_count" == "1" ]] && printf OK || printf WARN)" "authentication" "$(configured_auth_label "$key" "$key_file" "$secret_id")"
-    if [[ -n "$host" ]] && command -v timeout >/dev/null 2>&1; then
+    append_check_line OK "connection mode" "$(connection_mode_label "$connection_mode")"
+    if [[ "$connection_mode" != "inputflow" ]]; then
+      append_check_line "$([[ -n "$host" ]] && printf OK || printf WARN)" "Windows host" "${host:-not configured}"
+      append_check_line "$([[ "$auth_count" == "1" ]] && printf OK || printf WARN)" "authentication" "$(configured_auth_label "$key" "$key_file" "$secret_id")"
+    else
+      append_check_line OK "Windows host" "not required"
+      append_check_line OK "authentication" "not required"
+    fi
+    if [[ "$connection_mode" != "inputflow" && -n "$host" ]] && command -v timeout >/dev/null 2>&1; then
       if probe_tcp_port "$host" "$port"; then
         append_check_line OK "input port" "$host:$port reachable"
       else
@@ -845,8 +889,10 @@ health_check() {
       else
         append_check_line WARN "clipboard port" "$host:15100 not reachable"
       fi
-    else
+    elif [[ "$connection_mode" != "inputflow" ]]; then
       append_check_line WARN "port probe" "host or timeout command unavailable"
+    else
+      append_check_line OK "port probe" "skipped for inputflow mode"
     fi
   )"
   doctor_text="$("$APP_BIN" doctor --config "$CONFIG_PATH" --state "$STATE_PATH" 2>&1 || true)"
@@ -859,8 +905,9 @@ $doctor_text"
 }
 
 connection_quality() {
-  local host port state auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms
+  local connection_mode host port state auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms
   local clipboard_enabled clipboard_send_enabled clipboard_force_poll clipboard_poll_ms latency_report quality_text peer_lines
+  connection_mode="$(read_connection_mode)"
   host="$(read_config_value host)"
   port="$(read_config_value port)"; [[ -n "$port" ]] || port="15101"
   state="$(service_state)"
@@ -884,7 +931,8 @@ connection_quality() {
     [[ -n "$peer_lines" ]] || peer_lines="No peer entries found in $STATE_PATH."
   fi
 
-  quality_text="Service: $(service_state_label "$state") ($state)
+quality_text="Service: $(service_state_label "$state") ($state)
+Connection mode: $(connection_mode_label "$connection_mode")
 Configured host: ${host:-not configured}
 Input port: $port
 Clipboard port: 15100
@@ -1310,10 +1358,11 @@ guided_pairing() {
 
 edit_settings() {
   local preset_host="${1:-}"
-  local host key key_file secret_id secret_key_name machine_name port screen_width screen_height auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms clipboard_enabled clipboard_force_poll clipboard_poll_ms
+  local connection_mode connection_mode_label_value host key key_file secret_id secret_key_name machine_name port screen_width screen_height auto_connect_enabled reconnect_initial_backoff_ms reconnect_max_backoff_ms reconnect_idle_retry_ms clipboard_enabled clipboard_force_poll clipboard_poll_ms
   local clipboard_send_enabled current_auth_mode auth_action key_mode cleanup_secret_id saved_message
   local mpris_media_keys_enabled mpris_player latency_report gui_output
 
+  connection_mode="$(read_connection_mode)"
   host="$(read_config_value host)"
   key="$(read_config_value key)"
   key_file="$(read_config_value key_file)"
@@ -1334,19 +1383,21 @@ edit_settings() {
 
   current_auth_mode="$(configured_auth_mode "$key" "$key_file" "$secret_id")"
 
-  local fields="host:Windows Host:entry||machine_name:Local Machine Name:entry||port:Network Port:entry||screen_width:Screen Width:entry||screen_height:Screen Height:entry||clipboard_poll_ms:Clipboard Poll (ms):entry||mpris_player:MPRIS Player:entry||clipboard_enabled:Sync Clipboard:switch||clipboard_send_enabled:Send Local Clipboard:switch||clipboard_force_poll:Force Wayland Polling:switch||mpris_media_keys_enabled:Enable Media Keys:switch||latency_report:Print Latency Report:switch"
-  local values="${preset_host:-$host}|$machine_name|$port|$screen_width|$screen_height|$clipboard_poll_ms|$mpris_player|$clipboard_enabled|$clipboard_send_enabled|$clipboard_force_poll|$mpris_media_keys_enabled|$latency_report"
+  connection_mode_label_value="$(connection_mode_label "$connection_mode")"
+  local fields="connection_mode:Connection Mode|PowerToys compatibility|InputFlow peers|Hybrid:combo||host:Windows Host:entry||machine_name:Local Machine Name:entry||port:Network Port:entry||screen_width:Screen Width:entry||screen_height:Screen Height:entry||clipboard_poll_ms:Clipboard Poll (ms):entry||mpris_player:MPRIS Player:entry||clipboard_enabled:Sync Clipboard:switch||clipboard_send_enabled:Send Local Clipboard:switch||clipboard_force_poll:Force Wayland Polling:switch||mpris_media_keys_enabled:Enable Media Keys:switch||latency_report:Print Latency Report:switch"
+  local values="$connection_mode_label_value|${preset_host:-$host}|$machine_name|$port|$screen_width|$screen_height|$clipboard_poll_ms|$mpris_player|$clipboard_enabled|$clipboard_send_enabled|$clipboard_force_poll|$mpris_media_keys_enabled|$latency_report"
 
   gui_output="$(python3 "$SCRIPT_DIR/src/ConfigDialog.py" "$APP_NAME Settings" "$fields" "$values" || true)"
   [[ -n "$gui_output" ]] || return 1
 
-  IFS='|' read -r host machine_name port screen_width screen_height clipboard_poll_ms mpris_player clipboard_enabled clipboard_send_enabled clipboard_force_poll mpris_media_keys_enabled latency_report <<< "$gui_output"
+  IFS='|' read -r connection_mode_label_value host machine_name port screen_width screen_height clipboard_poll_ms mpris_player clipboard_enabled clipboard_send_enabled clipboard_force_poll mpris_media_keys_enabled latency_report <<< "$gui_output"
+  connection_mode="$(connection_mode_from_label "$connection_mode_label_value")"
 
   # Validation
   if ! is_integer_in_range "$port" 1 65535; then zenity --error --text="Port must be 1-65535."; return 1; fi
 
-  # Authentication (Keep Zenity for secret-tool branching)
-  while true; do
+  # Authentication is only required for PowerToys compatibility.
+  while [[ "$connection_mode" != "inputflow" ]]; do
     auth_action="$(zenity --list --radiolist --title="$APP_NAME Auth" --width=500 --height=220 \
       --text="Method: $current_auth_mode" \
       --column="Use" --column="Action" \
@@ -1389,7 +1440,7 @@ edit_settings() {
     break
   done
 
-  write_config "$host" "$key" "$key_file" "$secret_id" "$machine_name" "$port" "$auto_connect_enabled" "$reconnect_initial_backoff_ms" "$reconnect_max_backoff_ms" "$reconnect_idle_retry_ms" "$clipboard_enabled" "$clipboard_send_enabled" "$clipboard_force_poll" "$clipboard_poll_ms" "$screen_width" "$screen_height" "$mpris_media_keys_enabled" "$mpris_player" "$latency_report" "$secret_key_name"
+  write_config "$host" "$key" "$key_file" "$secret_id" "$machine_name" "$port" "$auto_connect_enabled" "$reconnect_initial_backoff_ms" "$reconnect_max_backoff_ms" "$reconnect_idle_retry_ms" "$clipboard_enabled" "$clipboard_send_enabled" "$clipboard_force_poll" "$clipboard_poll_ms" "$screen_width" "$screen_height" "$mpris_media_keys_enabled" "$mpris_player" "$latency_report" "$secret_key_name" "$connection_mode"
   zenity --info --text="Settings saved."
   offer_service_restart_if_active "Settings updated."
 }
@@ -1451,29 +1502,30 @@ start_session() {
     "$APP_BIN" init-config --config "$CONFIG_PATH" --force >/dev/null
   fi
 
-  local host key key_file secret_id auth_count resolved_key_file
+  local connection_mode host key key_file secret_id auth_count resolved_key_file
+  connection_mode="$(read_connection_mode)"
   host="$(read_config_value host)"
   key="$(read_config_value key)"
   key_file="$(read_config_value key_file)"
   secret_id="$(read_secret_id_value)"
   auth_count="$(configured_auth_source_count "$key" "$key_file" "$secret_id")"
 
-  if [[ -z "$host" ]]; then
+  if [[ "$connection_mode" != "inputflow" && -z "$host" ]]; then
     zenity --error --text="Set a Windows host before starting."
     return 1
   fi
 
-  if (( auth_count == 0 )); then
+  if [[ "$connection_mode" != "inputflow" ]] && (( auth_count == 0 )); then
     zenity --error --text="Set exactly one authentication method before starting: inline key, key file, or Secret Service entry."
     return 1
   fi
 
-  if (( auth_count > 1 )); then
+  if [[ "$connection_mode" != "inputflow" ]] && (( auth_count > 1 )); then
     zenity --error --text="Multiple authentication methods are configured. Keep only one of: inline key, key file, or Secret Service entry."
     return 1
   fi
 
-  if [[ -n "$key_file" ]]; then
+  if [[ "$connection_mode" != "inputflow" && -n "$key_file" ]]; then
     resolved_key_file="$(resolve_config_relative_path "$key_file")"
     if [[ ! -r "$resolved_key_file" ]]; then
       zenity --error --text="Key file is not readable: $resolved_key_file"
@@ -1481,7 +1533,7 @@ start_session() {
     fi
   fi
 
-  if [[ -n "$secret_id" && -z "$(trim_whitespace "$secret_id")" ]]; then
+  if [[ "$connection_mode" != "inputflow" && -n "$secret_id" && -z "$(trim_whitespace "$secret_id")" ]]; then
     zenity --error --text="Secret Service authentication requires a non-empty identifier."
     return 1
   fi

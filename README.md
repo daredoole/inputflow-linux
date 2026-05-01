@@ -118,7 +118,9 @@ User-facing beta operations:
 This repository started as a fork of [chrischip/mwb-client-linux](https://github.com/chrischip/mwb-client-linux) and has been substantially expanded with service management, rich clipboard support, and recovery tooling.
 
 ### Configuration (`config.ini`)
-Supports `key_file`, `key_secret_id` (keyring), `screen_width/height` overrides, `topology_enabled`, `topology_file`, experimental `android_peers_enabled`, and more. Default path: `~/.config/mwb-client/config.ini`.
+Supports `connection_mode`, `key_file`, `key_secret_id` (keyring), `screen_width/height` overrides, `topology_enabled`, `topology_file`, experimental `android_peers_enabled`, and more. Default path: `~/.config/mwb-client/config.ini`.
+
+`connection_mode=powertoys` is the default Windows PowerToys/MWB compatibility path. `connection_mode=inputflow` runs native InputFlow peer services without requiring a Windows host/key. `connection_mode=hybrid` enables both paths at once.
 
 Display-level topology is a separate opt-in contract. The default runtime remains MWB-compatible machine placement unless topology is explicitly enabled; see [docs/topology.md](docs/topology.md) for examples, wrap policies, validation, and cross-machine handoff behavior.
 
