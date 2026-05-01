@@ -20,6 +20,14 @@ InputFlow is a native Linux peer for Microsoft PowerToys Mouse Without Borders (
 | Network trust model | Trusted LAN/subnet | Use on a trusted local network. Do not expose MWB ports to untrusted networks or the public internet. |
 | Display-level topology config | Opt-in | The contract is documented in [Topology Config Contract](topology.md), and the default runtime remains MWB-compatible machine placement unless topology is enabled. |
 
+## Connection Modes
+
+`connection_mode=powertoys` is the default compatibility mode. It requires a Windows host plus one security-key source and runs the PowerToys/MWB socket protocol.
+
+`connection_mode=inputflow` disables the PowerToys transport and runs native InputFlow peer services only. In the current beta, that mainly means Android relay/local capture paths; Linux-to-Linux native peer transport is still future work.
+
+`connection_mode=hybrid` runs both. Use it when this Linux host should stay paired to Windows PowerToys while also exposing InputFlow-native peers such as Android.
+
 ## Linux Session Details
 
 X11 is the simpler path because clipboard helpers and desktop automation policy are more predictable. Wayland can work, but compositor policy matters: even with `/dev/uinput` access, the compositor or desktop environment may restrict, gate, or prompt around synthetic input behavior.

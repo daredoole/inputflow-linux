@@ -43,6 +43,8 @@ struct RuntimeOptions {
     bool debugKeyLogging{false};
     bool debugShortcutLogging{false};
     bool latencyReport{false};
+    bool powerToysCompatibilityEnabled{true};
+    bool inputFlowPeersEnabled{false};
     bool topologyRuntimeEnabled{false};
     std::filesystem::path topologyFilePath;
     std::string androidCaptureBackend{"none"};

@@ -50,12 +50,64 @@ void OnStartService(GtkButton*, gpointer)   { RunServiceAction("start");   }
 void OnStopService(GtkButton*, gpointer)    { RunServiceAction("stop");    }
 void OnRestartService(GtkButton*, gpointer) { RunServiceAction("restart"); }
 
+ConnectionMode ActiveConnectionMode(GuiMainWindow* win) {
+    if (!win->connectionModeCombo) {
+        return ConnectionMode::PowerToys;
+    }
+    const gchar* activeId = gtk_combo_box_get_active_id(GTK_COMBO_BOX(win->connectionModeCombo));
+    if (activeId == nullptr) {
+        return ConnectionMode::PowerToys;
+    }
+    return ParseConnectionMode(activeId).value_or(ConnectionMode::PowerToys);
+}
+
+void ApplyModeSensitivity(GuiMainWindow* win) {
+    const ConnectionMode mode = ActiveConnectionMode(win);
+    const gboolean powerToysEnabled = PowerToysCompatibilityEnabled(mode);
+    const gboolean inputFlowEnabled = InputFlowPeersEnabled(mode);
+
+    GtkWidget* powerToysWidgets[] = {
+        win->hostEntry,
+        win->portSpin,
+        win->keyEntry,
+        win->autoConnectSwitch,
+        win->clipboardSwitch,
+        win->mprisSwitch,
+        win->mprisPlayerEntry,
+    };
+    for (GtkWidget* widget : powerToysWidgets) {
+        if (widget) {
+            gtk_widget_set_sensitive(widget, powerToysEnabled);
+        }
+    }
+
+    GtkWidget* inputFlowWidgets[] = {
+        win->androidSwitch,
+        win->androidPortSpin,
+        win->androidSecretEntry,
+        win->androidNameEntry,
+        win->androidBackendCombo,
+        win->androidWidthSpin,
+        win->androidHeightSpin,
+    };
+    for (GtkWidget* widget : inputFlowWidgets) {
+        if (widget) {
+            gtk_widget_set_sensitive(widget, inputFlowEnabled);
+        }
+    }
+}
+
+void OnConnectionModeChanged(GtkComboBox*, gpointer data) {
+    ApplyModeSensitivity(static_cast<GuiMainWindow*>(data));
+}
+
 // ---- settings save ---------------------------------------------------------
 
 void OnSaveSettings(GtkButton*, gpointer data) {
     auto* win = static_cast<GuiMainWindow*>(data);
 
     AppConfig cfg;
+    cfg.connectionMode = ActiveConnectionMode(win);
     cfg.host         = gtk_entry_get_text(GTK_ENTRY(win->hostEntry));
     cfg.port         = static_cast<int>(gtk_spin_button_get_value(GTK_SPIN_BUTTON(win->portSpin)));
     cfg.machineName  = gtk_entry_get_text(GTK_ENTRY(win->nameEntry));
@@ -74,8 +126,8 @@ void OnSaveSettings(GtkButton*, gpointer data) {
     cfg.androidPeerName     = gtk_entry_get_text(GTK_ENTRY(win->androidNameEntry));
     cfg.androidDeviceWidth  = static_cast<int>(gtk_spin_button_get_value(GTK_SPIN_BUTTON(win->androidWidthSpin)));
     cfg.androidDeviceHeight = static_cast<int>(gtk_spin_button_get_value(GTK_SPIN_BUTTON(win->androidHeightSpin)));
-    const gchar* backendText = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(win->androidBackendCombo));
-    if (backendText) cfg.androidCaptureBackend = backendText;
+    const gchar* backendId = gtk_combo_box_get_active_id(GTK_COMBO_BOX(win->androidBackendCombo));
+    if (backendId) cfg.androidCaptureBackend = backendId;
 
     std::string err;
     WriteAppConfig(win->configPath, cfg, &err);
@@ -195,6 +247,15 @@ GtkWidget* BuildSettingsTab(GuiMainWindow* win, const AppConfig& cfg) {
 
     // Section: Connection
     gtk_box_pack_start(GTK_BOX(box), MakeSectionHeader("Connection"), FALSE, FALSE, 0);
+
+    win->connectionModeCombo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(win->connectionModeCombo), "powertoys", "PowerToys compatibility");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(win->connectionModeCombo), "inputflow", "InputFlow peers");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(win->connectionModeCombo), "hybrid", "Hybrid");
+    const std::string activeMode{ConnectionModeName(cfg.connectionMode)};
+    gtk_combo_box_set_active_id(GTK_COMBO_BOX(win->connectionModeCombo), activeMode.c_str());
+    g_signal_connect(win->connectionModeCombo, "changed", G_CALLBACK(OnConnectionModeChanged), win);
+    GridAttach(grid, MakeLabel("Mode"), win->connectionModeCombo, row++);
 
     win->hostEntry = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(win->hostEntry), cfg.host.c_str());
@@ -371,7 +432,7 @@ GtkWidget* BuildAndroidTab(GuiMainWindow* win, const AppConfig& cfg) {
     win->androidBackendCombo = gtk_combo_box_text_new();
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(win->androidBackendCombo), "none",  "none");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(win->androidBackendCombo), "libei", "libei");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(win->androidBackendCombo), "local", "local");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(win->androidBackendCombo), "evdev", "evdev");
     gtk_combo_box_set_active_id(GTK_COMBO_BOX(win->androidBackendCombo),
                                 cfg.androidCaptureBackend.empty() ? "none" : cfg.androidCaptureBackend.c_str());
     GridAttach(grid, MakeLabel("Capture backend"), win->androidBackendCombo, row++);
@@ -430,6 +491,8 @@ GuiMainWindow* CreateMainWindow(const AppConfig& config,
         BuildMonitorTab(win, config), gtk_label_new("Monitor Layout"));
     gtk_notebook_append_page(GTK_NOTEBOOK(win->notebook),
         BuildAndroidTab(win, config), gtk_label_new("Android"));
+
+    ApplyModeSensitivity(win);
 
     gtk_widget_show_all(win->window);
     gtk_widget_hide(win->window);  // start hidden; shown from tray

@@ -24,6 +24,7 @@ struct GuiMainWindow {
     GtkTextBuffer* logBuf{nullptr};
 
     // Settings tab — connection
+    GtkWidget* connectionModeCombo{nullptr};
     GtkWidget* hostEntry{nullptr};
     GtkWidget* portSpin{nullptr};
     GtkWidget* nameEntry{nullptr};
