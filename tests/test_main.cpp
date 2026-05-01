@@ -3,6 +3,7 @@
 #include <iostream>
 #include <string>
 
+#include "AndroidRelay.h"
 #include "AppConfig.h"
 #include "AppState.h"
 #include "Discovery.h"
@@ -53,6 +54,11 @@ void TestAppConfigRoundTrip() {
     config.latencyReport = true;
     config.topologyRuntimeEnabled = true;
     config.topologyFile = "topology.conf";
+    config.androidPeersEnabled = true;
+    config.androidRelayPort = 15112;
+    config.androidRelaySecret = "android-secret";
+    config.androidPeerName = "pixel-8";
+    config.androidCaptureBackend = "evdev";
 
     const std::filesystem::path path = MakeTempPath("mwb-config-test.ini");
     std::string error;
@@ -80,6 +86,16 @@ void TestAppConfigRoundTrip() {
                        "Rendered config should keep topology_enabled");
     ExpectRenderedLine(rendered, "topology_file", "topology.conf",
                        "Rendered config should keep topology_file");
+    ExpectRenderedLine(rendered, "android_peers_enabled", "true",
+                       "Rendered config should keep android_peers_enabled");
+    ExpectRenderedLine(rendered, "android_relay_port", "15112",
+                       "Rendered config should keep android_relay_port");
+    ExpectRenderedLine(rendered, "android_relay_secret", "android-secret",
+                       "Rendered config should keep android_relay_secret");
+    ExpectRenderedLine(rendered, "android_peer_name", "pixel-8",
+                       "Rendered config should keep android_peer_name");
+    ExpectRenderedLine(rendered, "android_capture_backend", "evdev",
+                       "Rendered config should keep android_capture_backend");
 
     mwb::AppConfig loaded;
     Expect(mwb::LoadConfigFile(path, loaded, error), "LoadConfigFile should succeed");
@@ -109,6 +125,16 @@ void TestAppConfigRoundTrip() {
                        "Loaded config should keep topology_enabled");
     ExpectRenderedLine(loadedRendered, "topology_file", "topology.conf",
                        "Loaded config should keep topology_file");
+    ExpectRenderedLine(loadedRendered, "android_peers_enabled", "true",
+                       "Loaded config should keep android_peers_enabled");
+    ExpectRenderedLine(loadedRendered, "android_relay_port", "15112",
+                       "Loaded config should keep android_relay_port");
+    ExpectRenderedLine(loadedRendered, "android_relay_secret", "android-secret",
+                       "Loaded config should keep android_relay_secret");
+    ExpectRenderedLine(loadedRendered, "android_peer_name", "pixel-8",
+                       "Loaded config should keep android_peer_name");
+    ExpectRenderedLine(loadedRendered, "android_capture_backend", "evdev",
+                       "Loaded config should keep android_capture_backend");
     Expect(loaded.machineName == config.machineName, "Config machine_name round-trip");
     Expect(loaded.port == config.port, "Config port round-trip");
     Expect(loaded.autoConnectEnabled == config.autoConnectEnabled, "Config autoConnectEnabled round-trip");
@@ -130,8 +156,29 @@ void TestAppConfigRoundTrip() {
     Expect(loaded.latencyReport == config.latencyReport, "Config latencyReport round-trip");
     Expect(loaded.topologyRuntimeEnabled == config.topologyRuntimeEnabled, "Config topologyRuntimeEnabled round-trip");
     Expect(loaded.topologyFile == config.topologyFile, "Config topologyFile round-trip");
+    Expect(loaded.androidPeersEnabled == config.androidPeersEnabled, "Config androidPeersEnabled round-trip");
+    Expect(loaded.androidRelayPort == config.androidRelayPort, "Config androidRelayPort round-trip");
+    Expect(loaded.androidRelaySecret == config.androidRelaySecret, "Config androidRelaySecret round-trip");
+    Expect(loaded.androidPeerName == config.androidPeerName, "Config androidPeerName round-trip");
+    Expect(loaded.androidCaptureBackend == config.androidCaptureBackend, "Config androidCaptureBackend round-trip");
     std::error_code ignore;
     std::filesystem::remove(path, ignore);
+}
+
+void TestAndroidRelayFrames() {
+    const mwb::MouseData mouse{123, 456, -120, 0x020A};
+    const std::string mouseFrame = mwb::BuildAndroidMouseFrame(mouse);
+    Expect(mouseFrame.find("\"type\":\"mouse\"") != std::string::npos, "Android mouse frame should include type");
+    Expect(mouseFrame.find("\"x\":123") != std::string::npos, "Android mouse frame should include x");
+    Expect(mouseFrame.find("\"y\":456") != std::string::npos, "Android mouse frame should include y");
+    Expect(mouseFrame.find("\"mouseData\":-120") != std::string::npos, "Android mouse frame should include mouseData");
+    Expect(mouseFrame.find("\"wParam\":522") != std::string::npos, "Android mouse frame should include wParam");
+
+    const mwb::KeyboardData keyboard{65, mwb::kLlkhfUp};
+    const std::string keyboardFrame = mwb::BuildAndroidKeyboardFrame(keyboard);
+    Expect(keyboardFrame.find("\"type\":\"keyboard\"") != std::string::npos, "Android keyboard frame should include type");
+    Expect(keyboardFrame.find("\"vkCode\":65") != std::string::npos, "Android keyboard frame should include vkCode");
+    Expect(keyboardFrame.find("\"flags\":128") != std::string::npos, "Android keyboard frame should include flags");
 }
 
 void TestAppConfigKeyFileRoundTrip() {
@@ -593,6 +640,7 @@ void TestKScreenDoctorParserIgnoresAnsiSequences() {
 
 int main() {
     TestAppConfigRoundTrip();
+    TestAndroidRelayFrames();
     TestAppConfigKeyFileRoundTrip();
     TestAppConfigKeySecretIdRoundTrip();
     TestAppConfigConnectionPolicyRoundTrip();

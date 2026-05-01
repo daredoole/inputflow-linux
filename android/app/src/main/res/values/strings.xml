@@ -1,0 +1,65 @@
+<resources>
+    <string name="app_name">InputFlow</string>
+    <string name="accessibility_label">InputFlow controlled peer</string>
+    <string name="ime_label">InputFlow keyboard</string>
+
+    <!-- Main screen -->
+    <string name="status_connected">Connected</string>
+    <string name="status_disconnected">Not connected</string>
+    <string name="status_connecting">Connecting…</string>
+    <string name="label_host">Host address</string>
+    <string name="label_port">Port</string>
+    <string name="label_secret">Secret</string>
+    <string name="btn_connect">Save &amp; Connect</string>
+    <string name="btn_release">Release to Desktop</string>
+    <string name="btn_accessibility">Open Accessibility Settings</string>
+    <string name="btn_keyboard">Choose Keyboard</string>
+    <string name="btn_notifications">App Notification Settings</string>
+    <string name="setup_title">Setup steps</string>
+    <string name="setup_subtitle">Complete these once to activate input control</string>
+
+    <!-- Settings screen -->
+    <string name="settings_title">Settings</string>
+    <string name="section_cursor">Cursor</string>
+    <string name="settings_cursor_size">Cursor size</string>
+    <string name="settings_cursor_size_small">S</string>
+    <string name="settings_cursor_size_medium">M</string>
+    <string name="settings_cursor_size_large">L</string>
+    <string name="settings_cursor_color">Cursor color</string>
+    <string name="settings_cursor_color_white">White</string>
+    <string name="settings_cursor_color_blue">Blue</string>
+    <string name="settings_cursor_color_red">Red</string>
+    <string name="settings_cursor_color_black">Black</string>
+    <string name="settings_sensitivity">Pointer sensitivity</string>
+    <string name="section_keyboard">Keyboard</string>
+    <string name="settings_laptop_typing">Laptop typing mode</string>
+    <string name="settings_laptop_typing_hint">Use the hidden InputFlow keyboard only while you want laptop keys to type into Android apps.</string>
+    <string name="settings_keyboard_mode">Fallback input mode</string>
+    <string name="settings_keyboard_accessibility">Accessibility</string>
+    <string name="settings_keyboard_ime">Hidden IME</string>
+    <string name="btn_choose_keyboard">Choose Keyboard</string>
+    <string name="btn_restore_keyboard">Restore Tablet Keyboard</string>
+    <string name="section_mode">Connection mode</string>
+    <string name="settings_mode_powertoys">Via PowerToys (Windows host)</string>
+    <string name="settings_mode_direct">Direct InputFlow (Linux host)</string>
+    <string name="mode_help_powertoys">Windows runs PowerToys Mouse Without Borders. InputFlow on Linux captures that stream and relays input to this device.</string>
+    <string name="mode_help_direct">InputFlow on Linux is the primary source. No Windows or PowerToys needed. The Linux machine relays keyboard and mouse directly to this device.</string>
+    <string name="section_layout">Device layout</string>
+    <string name="btn_edit_layout">Edit Device Layout</string>
+    <string name="layout_editor_hint">Drag devices to set their position relative to each other. The green device is this tablet.</string>
+
+    <!-- Key mapper -->
+    <string name="section_shortcuts">Keyboard Shortcuts</string>
+    <string name="shortcuts_hint">Map keyboard keys to gestures and system actions. Tap a shortcut chip to reassign it using your laptop keyboard.</string>
+    <string name="btn_edit_shortcuts">Edit Shortcuts</string>
+    <string name="shortcuts_title">Keyboard Shortcuts</string>
+    <string name="shortcuts_caption">Tap any shortcut to reassign it. Hold Ctrl/Alt/Shift while pressing the new key to create combos. Works with mouse or trackpad.</string>
+    <string name="shortcut_listen_hint">Press a key on your keyboard…</string>
+    <string name="shortcut_clear">Clear</string>
+
+    <!-- Layout editor -->
+    <string name="editor_title">Device Layout</string>
+    <string name="btn_apply_layout">Apply Layout</string>
+    <string name="editor_this_device">This Device</string>
+    <string name="editor_not_connected">Connect to InputFlow first to load device list</string>
+</resources>

@@ -3,6 +3,7 @@
 #include "ScreenGeometry.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -329,7 +330,13 @@ void ClientRuntime::ConfigureTopologyPreview(const ScreenSize& screenSize) {
         true,
         [this](const MouseData& mouse,
                const TopologyPointerTransition&,
-               const std::string&) {
+               const std::string& targetMachineId) {
+            if (m_androidRelay &&
+                targetMachineId == m_options.androidRelay.peerName &&
+                TrySetAndroidControlActive(true) &&
+                TrySendAndroidMouse(mouse)) {
+                return true;
+            }
             return m_network && m_network->SendMouse(mouse);
         });
     std::cout << "[TOPOLOGY] Loaded topology from "
@@ -394,6 +401,25 @@ int ClientRuntime::Run() {
         m_clipboard = ClipboardManager::CreateDefault();
     }
 
+    if (m_options.androidRelay.enabled) {
+        m_androidRelay = std::make_unique<AndroidRelayServer>(m_options.androidRelay);
+        m_androidRelay->SetOnReleaseRequested([this]() {
+            TrySetAndroidControlActive(false);
+            std::cout << "[ANDROID] Relay release requested; returning input to local desktop." << std::endl;
+        });
+        m_androidRelay->SetOnTopologyUpdate([this](const std::string& layoutJson) {
+            ApplyAndroidTopologyUpdate(layoutJson);
+        });
+        if (screenSize.width > 0 && !m_options.localMachineName.empty()) {
+            m_androidRelay->SetLocalDeviceInfo(m_options.localMachineName, screenSize.width, screenSize.height);
+        }
+        if (!m_androidRelay->Start()) {
+            std::cerr << "WARN: Android relay failed to start; Android peer handoff is disabled." << std::endl;
+            m_androidRelay.reset();
+        }
+    }
+    StartLocalAndroidInputBridge(screenSize);
+
     if (m_clipboard) {
         m_clipboardBackendName = m_clipboard->BackendName();
         std::cout << "[INFO] Clipboard backend: " << m_clipboardBackendName << std::endl;
@@ -446,6 +472,10 @@ int ClientRuntime::Run() {
                       << " mouseData=" << md.mouseData
                       << std::endl;
         }
+        if (m_androidRelayActive && TrySendAndroidMouse(md)) {
+            return;
+        }
+        m_androidRelayActive = false;
         m_dispatcher.SubmitMouse(md);
     });
 
@@ -454,12 +484,19 @@ int ClientRuntime::Run() {
             std::cout << "[INPUT] Keyboard: vk=0x" << std::hex << kd.vkCode
                       << " flags=0x" << kd.flags << std::dec << std::endl;
         }
+        if (m_androidRelayActive && TrySendAndroidKeyboard(kd)) {
+            return;
+        }
         m_dispatcher.SubmitKeyboard(kd);
     });
 
     if (!m_network->Connect()) {
         std::cerr << "Terminating: Network failure." << std::endl;
         m_dispatcher.Stop();
+        if (m_androidRelay) {
+            m_androidRelay->Stop();
+        }
+        StopLocalAndroidInputBridge();
         m_network.reset();
         return 1;
     }
@@ -544,7 +581,11 @@ void ClientRuntime::Stop() {
         return;
     }
 
+    StopLocalAndroidInputBridge();
     StopClipboardWatcher();
+    if (m_androidRelay) {
+        m_androidRelay->Stop();
+    }
     if (m_network) {
         m_network->Stop();
     }
@@ -556,6 +597,227 @@ void ClientRuntime::Stop() {
         std::cout << InputManager::FormatMouseTrace(m_input.MouseTraceSnapshot());
     }
     m_network.reset();
+    m_androidRelay.reset();
+}
+
+void ClientRuntime::StartLocalAndroidInputBridge(const ScreenSize& screenSize) {
+    if (!m_androidRelay || !m_topology || !m_options.topologyRuntimeEnabled) {
+        return;
+    }
+
+    if (m_options.androidCaptureBackend.empty() || m_options.androidCaptureBackend == "none") {
+        std::cout << "[ANDROID] Local capture backend disabled; relay will accept remote/topology forwarded input only." << std::endl;
+        return;
+    }
+
+    if (m_options.androidCaptureBackend == "libei") {
+        LibeiInputCaptureBridgeOptions options;
+        options.desktopWidth = screenSize.width;
+        options.desktopHeight = screenSize.height;
+        options.sendMouse = [this](const MouseData& mouse) {
+            return TrySendAndroidMouse(mouse);
+        };
+        options.sendKeyboard = [this](const KeyboardData& keyboard) {
+            return TrySendAndroidKeyboard(keyboard);
+        };
+        options.sendGesture = [this](const std::string& kind, double dx, double dy) {
+            return TrySendAndroidGesture(kind, dx, dy);
+        };
+        options.sendControl = [this](bool active) {
+            return TrySetAndroidControlActive(active);
+        };
+        m_libeiInputCaptureBridge = std::make_unique<LibeiInputCaptureBridge>(std::move(options));
+        m_libeiInputCaptureBridge->Start();
+        return;
+    }
+
+    if (m_options.androidCaptureBackend != "evdev") {
+        std::cerr << "WARN: Unknown android_capture_backend='" << m_options.androidCaptureBackend
+                  << "'; local Android handoff disabled." << std::endl;
+        return;
+    }
+
+    std::cerr << "WARN: android_capture_backend=evdev is a prototype fallback. It can mirror Fedora cursor movement and is not monitor-grade on KDE Wayland." << std::endl;
+
+    LocalAndroidInputBridgeOptions options;
+    options.topology = m_topology;
+    options.localMachineName = m_options.localMachineName;
+    options.androidPeerName = m_options.androidRelay.peerName;
+    options.desktopWidth = screenSize.width;
+    options.desktopHeight = screenSize.height;
+    options.sendMouse = [this](const MouseData& mouse) {
+        return TrySendAndroidMouse(mouse);
+    };
+
+    m_localAndroidInputBridge = std::make_unique<LocalAndroidInputBridge>(std::move(options));
+    m_localAndroidInputBridge->Start();
+}
+
+void ClientRuntime::StopLocalAndroidInputBridge() {
+    if (m_libeiInputCaptureBridge) {
+        m_libeiInputCaptureBridge->Stop();
+        m_libeiInputCaptureBridge.reset();
+    }
+
+    if (!m_localAndroidInputBridge) {
+        return;
+    }
+    m_localAndroidInputBridge->Stop();
+    m_localAndroidInputBridge.reset();
+}
+
+bool ClientRuntime::TrySendAndroidMouse(const MouseData& mouse) {
+    return m_androidRelay && m_androidRelay->SendMouse(mouse);
+}
+
+bool ClientRuntime::TrySendAndroidKeyboard(const KeyboardData& keyboard) {
+    return m_androidRelayActive && m_androidRelay && m_androidRelay->SendKeyboard(keyboard);
+}
+
+bool ClientRuntime::TrySendAndroidGesture(const std::string& kind, double dx, double dy) {
+    return m_androidRelayActive && m_androidRelay && m_androidRelay->SendGesture(kind, dx, dy);
+}
+
+bool ClientRuntime::TrySetAndroidControlActive(bool active) {
+    const bool wasActive = m_androidRelayActive.exchange(active);
+    if (!m_androidRelay || wasActive == active) {
+        return m_androidRelay != nullptr;
+    }
+    return m_androidRelay->SendControl(active);
+}
+
+void ClientRuntime::ApplyAndroidTopologyUpdate(const std::string& frameJson) {
+    if (!m_options.androidRelay.layoutEditorEnabled) {
+        return;
+    }
+
+    // Minimal JSON parse: extract "layout" array positions for "linux" and "android"
+    int lx = 0, ly = 0, ax = 0, ay = 0;
+    bool gotLinux = false, gotAndroid = false;
+    const std::string layoutMarker = "\"layout\":[";
+    auto layoutStart = frameJson.find(layoutMarker);
+    if (layoutStart == std::string::npos) {
+        return;
+    }
+    std::string remaining = frameJson.substr(layoutStart + layoutMarker.size());
+    while (!remaining.empty() && remaining.front() != ']') {
+        auto idPos = remaining.find("\"id\":\"");
+        auto xPos = remaining.find("\"x\":");
+        auto yPos = remaining.find("\"y\":");
+        if (idPos == std::string::npos || xPos == std::string::npos || yPos == std::string::npos) {
+            break;
+        }
+        auto idValStart = idPos + 6;
+        auto idValEnd = remaining.find('"', idValStart);
+        if (idValEnd == std::string::npos) break;
+        const std::string id = remaining.substr(idValStart, idValEnd - idValStart);
+        const int x = std::stoi(remaining.substr(xPos + 4));
+        const int y = std::stoi(remaining.substr(yPos + 4));
+        if (id == "linux") { lx = x; ly = y; gotLinux = true; }
+        else if (id == "android") { ax = x; ay = y; gotAndroid = true; }
+        auto nextItem = remaining.find('{', idValEnd);
+        if (nextItem == std::string::npos) break;
+        remaining = remaining.substr(nextItem);
+    }
+    if (!gotLinux || !gotAndroid) {
+        std::cerr << "[ANDROID] topology_update: missing linux or android position." << std::endl;
+        return;
+    }
+
+    const int linuxW = m_options.screenWidth.value_or(1920);
+    const int linuxH = m_options.screenHeight.value_or(1080);
+    const int androidW = m_options.androidRelay.androidDeviceWidth;
+    const int androidH = m_options.androidRelay.androidDeviceHeight;
+    const std::string linuxMachine = m_options.localMachineName.empty() ? "linux" : m_options.localMachineName;
+    const std::string androidMachine = m_options.androidRelay.peerName;
+
+    // Determine relative placement direction
+    const int dx = ax - lx;
+    const int dy = ay - ly;
+    std::string exitEdge, entryEdge;
+    int androidAbsX = 0, androidAbsY = 0;
+    if (std::abs(dx) >= std::abs(dy)) {
+        if (dx >= 0) {
+            exitEdge = "right"; entryEdge = "left";
+            androidAbsX = linuxW;
+            androidAbsY = 0;
+        } else {
+            exitEdge = "left"; entryEdge = "right";
+            androidAbsX = -androidW;
+            androidAbsY = 0;
+        }
+    } else {
+        if (dy >= 0) {
+            exitEdge = "down"; entryEdge = "up";
+            androidAbsX = 0;
+            androidAbsY = linuxH;
+        } else {
+            exitEdge = "up"; entryEdge = "down";
+            androidAbsX = 0;
+            androidAbsY = -androidH;
+        }
+    }
+
+    std::ostringstream cfg;
+    cfg << "# auto-generated from Android layout editor\n"
+        << "wrap=none\n"
+        << "machine=" << linuxMachine << "\n"
+        << "machine=" << androidMachine << "\n"
+        << "display=" << linuxMachine << "_d," << linuxMachine << ",0,0," << linuxW << "," << linuxH << "\n"
+        << "display=" << androidMachine << "_d," << androidMachine << ","
+        << androidAbsX << "," << androidAbsY << "," << androidW << "," << androidH << "\n"
+        << "link=" << linuxMachine << "_d," << exitEdge << "," << androidMachine << "_d," << entryEdge << "\n"
+        << "link=" << androidMachine << "_d," << entryEdge << "," << linuxMachine << "_d," << exitEdge << "\n";
+
+    TopologyModel newModel;
+    std::string error;
+    if (!ParseTopologyConfig(cfg.str(), newModel, &error)) {
+        std::cerr << "[ANDROID] Failed to parse generated topology: " << error << std::endl;
+        return;
+    }
+    const auto issues = newModel.validate();
+    if (!issues.empty()) {
+        std::cerr << "[ANDROID] Generated topology invalid: " << issues.front().message << std::endl;
+        return;
+    }
+
+    const ScreenSize screenSize{linuxW, linuxH, ScreenSize::Source::Explicit};
+    const std::string sourceDisplayId = SelectTopologySourceDisplay(newModel, linuxMachine, screenSize);
+    if (sourceDisplayId.empty()) {
+        std::cerr << "[ANDROID] Generated topology has no display for local machine." << std::endl;
+        return;
+    }
+
+    m_topology = std::make_shared<TopologyModel>(std::move(newModel));
+    m_dispatcher.SetTopologyPreview(m_topology, sourceDisplayId, true);
+    m_dispatcher.SetTopologyHandoff(
+        linuxMachine,
+        linuxW,
+        linuxH,
+        true,
+        [this](const MouseData& mouse,
+               const TopologyPointerTransition&,
+               const std::string& targetMachineId) {
+            if (m_androidRelay &&
+                targetMachineId == m_options.androidRelay.peerName &&
+                TrySetAndroidControlActive(true) &&
+                TrySendAndroidMouse(mouse)) {
+                return true;
+            }
+            return m_network && m_network->SendMouse(mouse);
+        });
+
+    std::cout << "[ANDROID] Applied topology update: linux " << exitEdge
+              << " → android." << std::endl;
+
+    // Optionally persist to topology_file
+    if (!m_options.topologyFilePath.empty()) {
+        std::ofstream out(m_options.topologyFilePath);
+        if (out) {
+            out << cfg.str();
+            std::cout << "[ANDROID] Topology saved to " << m_options.topologyFilePath << std::endl;
+        }
+    }
 }
 
 } // namespace mwb

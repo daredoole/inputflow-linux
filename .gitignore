@@ -17,6 +17,7 @@ mwb-lock-report-*.txt
 mwb-socket-trace-*.txt
 inputflow-windows-pair-*.ps1
 AGENTS.md
+artifacts/
 
 # Editor / OS noise
 .vscode/

@@ -12,6 +12,7 @@
 #include <fstream>
 #include <grp.h>
 #include <initializer_list>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <netdb.h>
@@ -19,6 +20,7 @@
 #include <poll.h>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
@@ -33,6 +35,11 @@
 #include "PeerRecovery.h"
 #include "SecretStore.h"
 #include "TopologyModel.h"
+
+#ifdef MWB_HAVE_GTK_GUI
+#include <gtk/gtk.h>
+#include "TrayController.h"
+#endif
 
 namespace {
 
@@ -59,12 +66,14 @@ void PrintGeneralUsage(std::ostream& out, const char* argv0) {
         << " [--latency-report]\n";
     out << "       " << binary << " discover [--state PATH] [--port PORT] [--timeout-ms MS] [--max-hosts N]\n";
     out << "       " << binary << " doctor [--config PATH] [--state PATH]\n";
+    out << "       " << binary << " android-pair [--config PATH]\n";
     out << "       " << binary << " topology explain [PATH] [--config PATH]\n";
     out << "       " << binary << " init-config [--config PATH] [--force] [--host IP] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME] [--port PORT]\n";
     out << "       " << binary << " export-windows-pair [--config PATH] [--output PATH] [--force] [--dry-run] [--check] [--linux-ip IP] [--position auto|top-left|top-right|bottom-left|bottom-right] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME]\n";
     out << "       " << binary << " install-user-service [--config PATH] [--unit PATH] [--force]\n";
     out << "       " << binary << " secret-store [--config PATH] --secret-id ID [--key KEY | --key-file PATH | --stdin]\n";
     out << "       " << binary << " secret-clear [--config PATH] [--secret-id ID]\n";
+    out << "       " << binary << " gui [--config PATH] [--state PATH]   — start combined tray + GUI (falls back to run if no display)\n";
     out << "Connection policy: auto_connect_enabled=true|false, reconnect_initial_backoff_ms, reconnect_max_backoff_ms, reconnect_idle_retry_ms in config\n";
     out << "Media keys: mpris_media_keys_enabled=true|false, mpris_player=PLAYER in config\n";
     out << "Set latency_report=true, MWB_LATENCY_REPORT=1, or use --latency-report to print client-side input queue/inject timing on shutdown\n";
@@ -571,6 +580,19 @@ std::optional<std::string> DetectOutboundLocalIpv4(const std::string& host, int 
 
     freeaddrinfo(results);
     return localIp;
+}
+
+std::string PercentEncode(std::string_view value) {
+    std::ostringstream out;
+    out << std::uppercase << std::hex;
+    for (const unsigned char ch : value) {
+        if (std::isalnum(ch) != 0 || ch == '-' || ch == '_' || ch == '.' || ch == '~') {
+            out << static_cast<char>(ch);
+            continue;
+        }
+        out << '%' << std::setw(2) << std::setfill('0') << static_cast<int>(ch);
+    }
+    return out.str();
 }
 
 std::optional<std::string> NormalizePeerPosition(std::string_view value) {
@@ -1191,6 +1213,14 @@ int RunClient(const mwb::AppConfig& config,
     options.latencyReport = runtimeConfig.latencyReport;
     options.topologyRuntimeEnabled = runtimeConfig.topologyRuntimeEnabled;
     options.topologyFilePath = runtimeConfig.topologyFile;
+    options.androidCaptureBackend = runtimeConfig.androidCaptureBackend;
+    options.androidRelay.enabled = runtimeConfig.androidPeersEnabled;
+    options.androidRelay.port = runtimeConfig.androidRelayPort;
+    options.androidRelay.secret = runtimeConfig.androidRelaySecret;
+    options.androidRelay.peerName = runtimeConfig.androidPeerName;
+    options.androidRelay.layoutEditorEnabled = runtimeConfig.androidLayoutEditorEnabled;
+    options.androidRelay.androidDeviceWidth = runtimeConfig.androidDeviceWidth;
+    options.androidRelay.androidDeviceHeight = runtimeConfig.androidDeviceHeight;
     options.onSessionEstablished = [&](const std::string& host, int port, const std::string& remoteName, uint32_t, uint32_t localMachineId) {
         std::lock_guard<std::mutex> lock(stateMutex);
         mwb::MarkSessionEstablished(state, host, port, remoteName, localMachineId, CurrentEpochSeconds());
@@ -1672,6 +1702,11 @@ int HandleDoctorCommand(const std::vector<std::string>& args) {
         PrintDoctorLine("INFO", "port", std::to_string(config.port));
         PrintDoctorLine("INFO", "clipboard", std::string(config.clipboardEnabled ? "enabled" : "disabled") +
             (config.clipboardSendEnabled ? ", send enabled" : ", receive-only"));
+        PrintDoctorLine("INFO", "android relay",
+            std::string(config.androidPeersEnabled ? "enabled" : "disabled") +
+            " port=" + std::to_string(config.androidRelayPort) +
+            " peer=" + (config.androidPeerName.empty() ? "<unset>" : config.androidPeerName) +
+            " secret=" + (config.androidRelaySecret.empty() ? "missing" : "configured"));
         PrintDoctorLine("INFO", "reconnect", "initial=" + std::to_string(config.reconnectInitialBackoffMs) +
             "ms max=" + std::to_string(config.reconnectMaxBackoffMs) +
             "ms idle=" + std::to_string(config.reconnectIdleRetryMs) + "ms");
@@ -2625,6 +2660,82 @@ int HandleTopologyCommand(const std::vector<std::string>& args) {
     return 0;
 }
 
+int HandleAndroidPairCommand(const std::vector<std::string>& args) {
+    std::filesystem::path configPath = mwb::DefaultConfigPath();
+
+    for (std::size_t index = 0; index < args.size(); ++index) {
+        const std::string& arg = args[index];
+        if (arg == "--config") {
+            if (index + 1 >= args.size()) {
+                std::cerr << "ERR: Missing value for --config." << std::endl;
+                return 1;
+            }
+            configPath = args[++index];
+        } else {
+            std::cerr << "ERR: Unknown android-pair option: " << arg << std::endl;
+            return 1;
+        }
+    }
+
+    mwb::AppConfig config;
+    std::string error;
+    if (!mwb::LoadConfigFile(configPath, config, error)) {
+        std::cerr << "ERR: " << error << std::endl;
+        return 1;
+    }
+    if (!config.androidPeersEnabled) {
+        std::cerr << "ERR: android_peers_enabled is false in " << configPath << "." << std::endl;
+        return 1;
+    }
+    if (config.androidRelaySecret.empty()) {
+        std::cerr << "ERR: android_relay_secret is empty in " << configPath << "." << std::endl;
+        return 1;
+    }
+
+    const std::string host = DetectOutboundLocalIpv4(config.host, config.port).value_or("<linux-ip>");
+    const std::string uri =
+        "inputflow://android-peer?host=" + PercentEncode(host) +
+        "&port=" + std::to_string(config.androidRelayPort) +
+        "&secret=" + PercentEncode(config.androidRelaySecret) +
+        "&peer=" + PercentEncode(config.androidPeerName);
+
+    std::cout << "Android pairing URI:" << std::endl;
+    std::cout << uri << std::endl;
+    std::cout << "Use this string as the QR payload or enter the fields manually in the Android app." << std::endl;
+    return 0;
+}
+
+#ifdef MWB_HAVE_GTK_GUI
+int HandleGuiCommand(const std::string& binary, const std::vector<std::string>& args) {
+    // Resolve config path from args (same parsing as HandleRunCommand)
+    std::filesystem::path configPath = mwb::DefaultConfigPath();
+    std::filesystem::path statePath  = mwb::DefaultStatePath();
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--config" && i + 1 < args.size()) configPath = args[++i];
+        else if (args[i] == "--state" && i + 1 < args.size()) statePath = args[++i];
+    }
+
+    mwb::AppConfig config;
+    if (std::filesystem::exists(configPath)) {
+        std::string err;
+        (void)mwb::LoadConfigFile(configPath, config, err);
+    }
+
+    // Try to initialise GTK; fall back to headless run if no display
+    int fakeArgc = 1;
+    const std::string binaryStr = binary;
+    char* fakeArgvArr[] = {const_cast<char*>(binaryStr.c_str()), nullptr};
+    char** fakeArgv = fakeArgvArr;
+    if (!gtk_init_check(&fakeArgc, &fakeArgv)) {
+        std::cerr << "No display available; running headless." << std::endl;
+        return HandleRunCommand(binary, args);
+    }
+
+    return mwb::RunTrayAndGui(binary, args, config,
+                              configPath.string(), statePath.string());
+}
+#endif
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2638,12 +2749,15 @@ int main(int argc, char** argv) {
     if (argc >= 3 && argc <= 4 && std::string(argv[1]) != "run" &&
         std::string(argv[1]) != "discover" &&
         std::string(argv[1]) != "doctor" &&
+        std::string(argv[1]) != "android-pair" &&
         std::string(argv[1]) != "topology" &&
         std::string(argv[1]) != "init-config" &&
         std::string(argv[1]) != "export-windows-pair" &&
         std::string(argv[1]) != "install-user-service" &&
         std::string(argv[1]) != "secret-store" &&
         std::string(argv[1]) != "secret-clear" &&
+        std::string(argv[1]) != "gui" &&
+        std::string(argv[1]) != "tray" &&
         std::string(argv[1]).rfind("--", 0) != 0) {
         return HandleLegacyRun(argc, argv);
     }
@@ -2666,6 +2780,9 @@ int main(int argc, char** argv) {
     if (command == "doctor") {
         return HandleDoctorCommand(args);
     }
+    if (command == "android-pair") {
+        return HandleAndroidPairCommand(args);
+    }
     if (command == "topology") {
         return HandleTopologyCommand(args);
     }
@@ -2684,6 +2801,12 @@ int main(int argc, char** argv) {
     if (command == "secret-clear") {
         return HandleSecretClearCommand(args);
     }
+
+#ifdef MWB_HAVE_GTK_GUI
+    if (command == "gui" || command == "tray") {
+        return HandleGuiCommand(binary, args);
+    }
+#endif
 
     std::cerr << "ERR: Unknown command: " << command << std::endl;
     PrintGeneralUsage(std::cerr, argv[0]);
