@@ -29,6 +29,14 @@ struct AppConfig {
     bool latencyReport{false};
     bool topologyRuntimeEnabled{false};
     std::string topologyFile;
+    bool androidPeersEnabled{false};
+    int androidRelayPort{15102};
+    std::string androidRelaySecret;
+    std::string androidPeerName{"android"};
+    std::string androidCaptureBackend{"none"};
+    bool androidLayoutEditorEnabled{true};
+    int androidDeviceWidth{1920};
+    int androidDeviceHeight{1200};
 };
 
 AppConfig LoadDefaultAppConfig();

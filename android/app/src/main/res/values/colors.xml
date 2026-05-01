@@ -1,0 +1,19 @@
+<resources>
+    <color name="colorPrimary">#1664C0</color>
+    <color name="colorOnPrimary">#FFFFFF</color>
+    <color name="colorSurface">#F8FAFF</color>
+    <color name="colorSurfaceVariant">#E8F0FE</color>
+    <color name="colorDark">#0A1628</color>
+    <color name="colorConnected">#2E7D32</color>
+    <color name="colorConnectedBg">#E8F5E9</color>
+    <color name="colorDisconnected">#C62828</color>
+    <color name="colorDisconnectedBg">#FFEBEE</color>
+    <color name="colorConnecting">#E65100</color>
+    <color name="colorConnectingBg">#FFF3E0</color>
+    <color name="colorEditorBg">#0A1628</color>
+    <color name="colorEditorGrid">#1A2840</color>
+    <color name="colorEditorDevice">#1664C0</color>
+    <color name="colorEditorDeviceLocal">#2E7D32</color>
+    <color name="colorEditorText">#FFFFFF</color>
+    <color name="colorCardStroke">#D0DEF5</color>
+</resources>
