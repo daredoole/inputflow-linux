@@ -117,6 +117,40 @@ AppConfig LoadDefaultAppConfig() {
     return AppConfig{};
 }
 
+std::optional<ConnectionMode> ParseConnectionMode(std::string_view value) {
+    const std::string lowered = ToLower(Trim(value));
+    if (lowered == "powertoys" || lowered == "power_toys" || lowered == "mwb" || lowered == "windows") {
+        return ConnectionMode::PowerToys;
+    }
+    if (lowered == "inputflow" || lowered == "inputflow_peers" || lowered == "native" || lowered == "peer") {
+        return ConnectionMode::InputFlow;
+    }
+    if (lowered == "hybrid" || lowered == "both") {
+        return ConnectionMode::Hybrid;
+    }
+    return std::nullopt;
+}
+
+std::string_view ConnectionModeName(ConnectionMode mode) {
+    switch (mode) {
+    case ConnectionMode::PowerToys:
+        return "powertoys";
+    case ConnectionMode::InputFlow:
+        return "inputflow";
+    case ConnectionMode::Hybrid:
+        return "hybrid";
+    }
+    return "powertoys";
+}
+
+bool PowerToysCompatibilityEnabled(ConnectionMode mode) {
+    return mode == ConnectionMode::PowerToys || mode == ConnectionMode::Hybrid;
+}
+
+bool InputFlowPeersEnabled(ConnectionMode mode) {
+    return mode == ConnectionMode::InputFlow || mode == ConnectionMode::Hybrid;
+}
+
 std::optional<bool> ParseConfigBool(std::string_view value) {
     const std::string lowered = ToLower(Trim(value));
     if (lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on") {
@@ -200,6 +234,16 @@ bool ParseAppConfig(std::string_view text, AppConfig& outConfig, std::string* er
         if (key.empty()) {
             SetError(errorMessage, "Config line " + std::to_string(lineNumber) + " has an empty key.");
             return false;
+        }
+
+        if (key == "connection_mode" || key == "mode") {
+            const auto parsed = ParseConnectionMode(value);
+            if (!parsed.has_value()) {
+                SetError(errorMessage, "Config key 'connection_mode' expects powertoys, inputflow, or hybrid.");
+                return false;
+            }
+            outConfig.connectionMode = *parsed;
+            continue;
         }
 
         if (key == "host") {
@@ -468,6 +512,7 @@ bool LoadAppConfigFromDefaultPath(AppConfig& outConfig, std::string* errorMessag
 
 std::string RenderAppConfig(const AppConfig& config) {
     std::ostringstream out;
+    out << "connection_mode=" << ConnectionModeName(config.connectionMode) << '\n';
     out << "host=" << config.host << '\n';
     out << "key=" << config.key << '\n';
     out << "key_file=" << config.keyFile << '\n';
@@ -521,6 +566,7 @@ std::string RenderSampleAppConfig() {
     out << "# Prefer key_secret_id=... or key_file=... to keep the security key out of this config file.\n";
     out << "# key_secret_id uses the desktop keyring via Secret Service when secret-tool is available.\n";
     out << "# Relative key_file paths resolve against the directory containing config.ini.\n";
+    out << "# connection_mode=powertoys uses PowerToys/MWB compatibility, inputflow uses native InputFlow peers, hybrid enables both.\n";
     out << "# Set auto_connect_enabled=false to keep the service idle until you re-enable it.\n";
     out << "# Set screen_width and screen_height to your local desktop size when needed.\n";
     out << "# Set topology_enabled=true and topology_file=... to enable runtime topology handoff.\n";

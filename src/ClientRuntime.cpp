@@ -337,7 +337,7 @@ void ClientRuntime::ConfigureTopologyPreview(const ScreenSize& screenSize) {
                 TrySendAndroidMouse(mouse)) {
                 return true;
             }
-            return m_network && m_network->SendMouse(mouse);
+            return m_options.powerToysCompatibilityEnabled && m_network && m_network->SendMouse(mouse);
         });
     std::cout << "[TOPOLOGY] Loaded topology from "
               << m_options.topologyFilePath.string()
@@ -377,27 +377,31 @@ int ClientRuntime::Run() {
     ConfigureTopologyPreview(screenSize);
     m_dispatcher.Start();
 
-    m_network = std::make_unique<NetworkManager>(m_options.host, m_options.port, m_options.key);
-    m_network->SetScreenSize(screenSize.width, screenSize.height);
-    m_network->SetAutoConnectEnabled(m_options.autoConnectEnabled);
-    m_network->SetReconnectBackoff(
-        m_options.reconnectInitialBackoffMs,
-        m_options.reconnectMaxBackoffMs,
-        m_options.reconnectIdleRetryMs);
-    if (m_options.localMachineId.has_value() || !m_options.localMachineName.empty()) {
-        m_network->SetLocalIdentity(m_options.localMachineId.value_or(0), m_options.localMachineName);
-    }
-    if (m_options.onSessionEstablished) {
-        m_network->SetOnSessionEstablished(m_options.onSessionEstablished);
-    }
-    m_network->SetOnSessionDisconnected([this]() {
-        m_dispatcher.ResetInputState();
-        if (m_options.onSessionDisconnected) {
-            m_options.onSessionDisconnected();
+    if (m_options.powerToysCompatibilityEnabled) {
+        m_network = std::make_unique<NetworkManager>(m_options.host, m_options.port, m_options.key);
+        m_network->SetScreenSize(screenSize.width, screenSize.height);
+        m_network->SetAutoConnectEnabled(m_options.autoConnectEnabled);
+        m_network->SetReconnectBackoff(
+            m_options.reconnectInitialBackoffMs,
+            m_options.reconnectMaxBackoffMs,
+            m_options.reconnectIdleRetryMs);
+        if (m_options.localMachineId.has_value() || !m_options.localMachineName.empty()) {
+            m_network->SetLocalIdentity(m_options.localMachineId.value_or(0), m_options.localMachineName);
         }
-    });
+        if (m_options.onSessionEstablished) {
+            m_network->SetOnSessionEstablished(m_options.onSessionEstablished);
+        }
+        m_network->SetOnSessionDisconnected([this]() {
+            m_dispatcher.ResetInputState();
+            if (m_options.onSessionDisconnected) {
+                m_options.onSessionDisconnected();
+            }
+        });
+    } else {
+        std::cout << "[MODE] PowerToys compatibility disabled; running InputFlow peer services only." << std::endl;
+    }
 
-    if (m_options.clipboardEnabled) {
+    if (m_network && m_options.clipboardEnabled) {
         m_clipboard = ClipboardManager::CreateDefault();
     }
 
@@ -454,6 +458,8 @@ int ClientRuntime::Run() {
         });
     } else if (!m_options.clipboardEnabled) {
         std::cerr << "WARN: Clipboard sync disabled by configuration." << std::endl;
+    } else if (!m_network) {
+        std::cerr << "WARN: Clipboard sync is disabled because PowerToys compatibility transport is not active." << std::endl;
     } else {
         std::cerr << "WARN: No supported clipboard backend detected. Install wl-clipboard for Wayland or xclip/xsel for X11 to enable clipboard sync." << std::endl;
     }
@@ -462,35 +468,37 @@ int ClientRuntime::Run() {
         std::cerr << "WARN: Local clipboard watch disabled; clipboard is running in receive-only mode." << std::endl;
     }
 
-    m_network->SetOnMouseCallback([this](const MouseData& md) {
-        if (m_options.debugInputLogging) {
-            std::cout << "[INPUT] Mouse: x=" << md.x << " y=" << md.y << " wParam=0x" << std::hex << md.wParam << std::dec << std::endl;
-        } else if (m_options.debugShortcutLogging && md.wParam != 0x0200) {
-            std::cout << "[INPUT] Mouse event: wParam=0x" << std::hex << md.wParam
-                      << " x=" << std::dec << md.x
-                      << " y=" << md.y
-                      << " mouseData=" << md.mouseData
-                      << std::endl;
-        }
-        if (m_androidRelayActive && TrySendAndroidMouse(md)) {
-            return;
-        }
-        m_androidRelayActive = false;
-        m_dispatcher.SubmitMouse(md);
-    });
+    if (m_network) {
+        m_network->SetOnMouseCallback([this](const MouseData& md) {
+            if (m_options.debugInputLogging) {
+                std::cout << "[INPUT] Mouse: x=" << md.x << " y=" << md.y << " wParam=0x" << std::hex << md.wParam << std::dec << std::endl;
+            } else if (m_options.debugShortcutLogging && md.wParam != 0x0200) {
+                std::cout << "[INPUT] Mouse event: wParam=0x" << std::hex << md.wParam
+                          << " x=" << std::dec << md.x
+                          << " y=" << md.y
+                          << " mouseData=" << md.mouseData
+                          << std::endl;
+            }
+            if (m_androidRelayActive && TrySendAndroidMouse(md)) {
+                return;
+            }
+            m_androidRelayActive = false;
+            m_dispatcher.SubmitMouse(md);
+        });
 
-    m_network->SetOnKeyboardCallback([this](const KeyboardData& kd) {
-        if (m_options.debugInputLogging || m_options.debugKeyLogging || m_options.debugShortcutLogging) {
-            std::cout << "[INPUT] Keyboard: vk=0x" << std::hex << kd.vkCode
-                      << " flags=0x" << kd.flags << std::dec << std::endl;
-        }
-        if (m_androidRelayActive && TrySendAndroidKeyboard(kd)) {
-            return;
-        }
-        m_dispatcher.SubmitKeyboard(kd);
-    });
+        m_network->SetOnKeyboardCallback([this](const KeyboardData& kd) {
+            if (m_options.debugInputLogging || m_options.debugKeyLogging || m_options.debugShortcutLogging) {
+                std::cout << "[INPUT] Keyboard: vk=0x" << std::hex << kd.vkCode
+                          << " flags=0x" << kd.flags << std::dec << std::endl;
+            }
+            if (m_androidRelayActive && TrySendAndroidKeyboard(kd)) {
+                return;
+            }
+            m_dispatcher.SubmitKeyboard(kd);
+        });
+    }
 
-    if (!m_network->Connect()) {
+    if (m_network && !m_network->Connect()) {
         std::cerr << "Terminating: Network failure." << std::endl;
         m_dispatcher.Stop();
         if (m_androidRelay) {
@@ -501,12 +509,18 @@ int ClientRuntime::Run() {
         return 1;
     }
 
-    if (!m_options.autoConnectEnabled) {
+    if (m_network && !m_options.autoConnectEnabled) {
         std::cout << "[CONNECT] Auto-connect disabled by configuration; service is idle until you re-enable it." << std::endl;
     }
 
     StartClipboardWatcher();
-    m_network->RunLoop();
+    if (m_network) {
+        m_network->RunLoop();
+    } else {
+        while (!m_stopRequested.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
     Stop();
     return 0;
 }
@@ -804,7 +818,7 @@ void ClientRuntime::ApplyAndroidTopologyUpdate(const std::string& frameJson) {
                 TrySendAndroidMouse(mouse)) {
                 return true;
             }
-            return m_network && m_network->SendMouse(mouse);
+            return m_options.powerToysCompatibilityEnabled && m_network && m_network->SendMouse(mouse);
         });
 
     std::cout << "[ANDROID] Applied topology update: linux " << exitEdge

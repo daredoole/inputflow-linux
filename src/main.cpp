@@ -57,6 +57,7 @@ void PrintGeneralUsage(std::ostream& out, const char* argv0) {
     out << "       " << binary
         << " run [--config PATH] [--state PATH] [--host IP] [--key KEY | --key-file PATH | --key-secret-id ID]"
         << " [--name NAME] [--port PORT]"
+        << " [--connection-mode powertoys|inputflow|hybrid]"
         << " [--enable-clipboard | --disable-clipboard | --clipboard-receive-only | --clipboard-full]"
         << " [--clipboard-force-poll] [--clipboard-poll-ms MS]"
         << " [--screen-width PX --screen-height PX]"
@@ -68,7 +69,7 @@ void PrintGeneralUsage(std::ostream& out, const char* argv0) {
     out << "       " << binary << " doctor [--config PATH] [--state PATH]\n";
     out << "       " << binary << " android-pair [--config PATH]\n";
     out << "       " << binary << " topology explain [PATH] [--config PATH]\n";
-    out << "       " << binary << " init-config [--config PATH] [--force] [--host IP] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME] [--port PORT]\n";
+    out << "       " << binary << " init-config [--config PATH] [--force] [--host IP] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME] [--port PORT] [--connection-mode powertoys|inputflow|hybrid]\n";
     out << "       " << binary << " export-windows-pair [--config PATH] [--output PATH] [--force] [--dry-run] [--check] [--linux-ip IP] [--position auto|top-left|top-right|bottom-left|bottom-right] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME]\n";
     out << "       " << binary << " install-user-service [--config PATH] [--unit PATH] [--force]\n";
     out << "       " << binary << " secret-store [--config PATH] --secret-id ID [--key KEY | --key-file PATH | --stdin]\n";
@@ -1184,8 +1185,10 @@ int RunClient(const mwb::AppConfig& config,
     }
 
     mwb::AppConfig runtimeConfig = config;
-    if (const auto recoveredHost = TryRecoverHostFromKnownPeers(config, state); recoveredHost.has_value()) {
-        runtimeConfig.host = *recoveredHost;
+    if (mwb::PowerToysCompatibilityEnabled(runtimeConfig.connectionMode)) {
+        if (const auto recoveredHost = TryRecoverHostFromKnownPeers(config, state); recoveredHost.has_value()) {
+            runtimeConfig.host = *recoveredHost;
+        }
     }
 
     std::mutex stateMutex;
@@ -1211,10 +1214,12 @@ int RunClient(const mwb::AppConfig& config,
     options.debugKeyLogging = IsTruthyEnv("MWB_DEBUG_KEYS");
     options.debugShortcutLogging = IsTruthyEnv("MWB_DEBUG_SHORTCUTS");
     options.latencyReport = runtimeConfig.latencyReport;
+    options.powerToysCompatibilityEnabled = mwb::PowerToysCompatibilityEnabled(runtimeConfig.connectionMode);
+    options.inputFlowPeersEnabled = mwb::InputFlowPeersEnabled(runtimeConfig.connectionMode);
     options.topologyRuntimeEnabled = runtimeConfig.topologyRuntimeEnabled;
     options.topologyFilePath = runtimeConfig.topologyFile;
     options.androidCaptureBackend = runtimeConfig.androidCaptureBackend;
-    options.androidRelay.enabled = runtimeConfig.androidPeersEnabled;
+    options.androidRelay.enabled = options.inputFlowPeersEnabled && runtimeConfig.androidPeersEnabled;
     options.androidRelay.port = runtimeConfig.androidRelayPort;
     options.androidRelay.secret = runtimeConfig.androidRelaySecret;
     options.androidRelay.peerName = runtimeConfig.androidPeerName;
@@ -1385,6 +1390,17 @@ int HandleRunCommand(const std::string& binary, const std::vector<std::string>& 
                 return 1;
             }
             config.port = *parsed;
+        } else if (arg == "--connection-mode" || arg == "--mode") {
+            const auto value = requireValue(arg.c_str());
+            if (!value) {
+                return 1;
+            }
+            const auto parsed = mwb::ParseConnectionMode(*value);
+            if (!parsed.has_value()) {
+                std::cerr << "ERR: Invalid connection mode. Use powertoys, inputflow, or hybrid." << std::endl;
+                return 1;
+            }
+            config.connectionMode = *parsed;
         } else if (arg == "--enable-clipboard") {
             config.clipboardEnabled = true;
             config.clipboardSendEnabled = true;
@@ -1497,13 +1513,15 @@ int HandleRunCommand(const std::string& binary, const std::vector<std::string>& 
         config.reconnectIdleRetryMs = config.reconnectMaxBackoffMs;
     }
 
-    std::string keyError;
-    if (!ResolveConfiguredKey(config, keyFileBaseDir, &keyError)) {
-        std::cerr << "ERR: " << keyError << std::endl;
-        return 1;
+    if (mwb::PowerToysCompatibilityEnabled(config.connectionMode)) {
+        std::string keyError;
+        if (!ResolveConfiguredKey(config, keyFileBaseDir, &keyError)) {
+            std::cerr << "ERR: " << keyError << std::endl;
+            return 1;
+        }
     }
 
-    if (config.host.empty() || config.key.empty()) {
+    if (mwb::PowerToysCompatibilityEnabled(config.connectionMode) && (config.host.empty() || config.key.empty())) {
         std::cerr << "ERR: Both host and a security key are required. Use --key, --key-file, --key-secret-id, or a config file." << std::endl;
         return 1;
     }
@@ -1697,7 +1715,13 @@ int HandleDoctorCommand(const std::vector<std::string>& args) {
         hasError = true;
     } else {
         PrintDoctorLine("OK", "config", configPath.string());
-        PrintDoctorLine(config.host.empty() ? "WARN" : "OK", "host", config.host.empty() ? "not configured" : config.host);
+        const bool powerToysEnabled = mwb::PowerToysCompatibilityEnabled(config.connectionMode);
+        PrintDoctorLine("INFO", "connection mode", std::string(mwb::ConnectionModeName(config.connectionMode)));
+        PrintDoctorLine(powerToysEnabled && config.host.empty() ? "WARN" : "OK",
+            "host",
+            powerToysEnabled
+                ? (config.host.empty() ? "not configured" : config.host)
+                : "not required for inputflow mode");
         PrintDoctorLine("INFO", "machine name", config.machineName.empty() ? "<auto>" : config.machineName);
         PrintDoctorLine("INFO", "port", std::to_string(config.port));
         PrintDoctorLine("INFO", "clipboard", std::string(config.clipboardEnabled ? "enabled" : "disabled") +
@@ -1711,7 +1735,9 @@ int HandleDoctorCommand(const std::vector<std::string>& args) {
             "ms max=" + std::to_string(config.reconnectMaxBackoffMs) +
             "ms idle=" + std::to_string(config.reconnectIdleRetryMs) + "ms");
 
-        if (!config.keySecretId.empty()) {
+        if (!powerToysEnabled) {
+            PrintDoctorLine("INFO", "key source", "not required for inputflow mode");
+        } else if (!config.keySecretId.empty()) {
             PrintDoctorLine("OK", "key source", "Secret Service id '" + config.keySecretId + "'");
         } else if (!config.keyFile.empty()) {
             std::filesystem::path keyPath = ResolveRelativeTo(config.keyFile, configPath.parent_path());
@@ -1721,10 +1747,17 @@ int HandleDoctorCommand(const std::vector<std::string>& args) {
         } else {
             PrintDoctorLine("WARN", "key source", "not configured");
         }
-        PrintDoctorAuthKeyPresence(config, configPath);
-        PrintDoctorHostProbe(config, 15100);
-        PrintDoctorHostProbe(config, 15101);
-        PrintDoctorConnectionQuality(config, statePath);
+        if (powerToysEnabled) {
+            PrintDoctorAuthKeyPresence(config, configPath);
+            PrintDoctorHostProbe(config, 15100);
+            PrintDoctorHostProbe(config, 15101);
+            PrintDoctorConnectionQuality(config, statePath);
+        } else {
+            PrintDoctorLine("INFO", "auth key", "not checked; PowerToys compatibility disabled");
+            PrintDoctorLine("INFO", "host 15100", "not checked; PowerToys compatibility disabled");
+            PrintDoctorLine("INFO", "host 15101", "not checked; PowerToys compatibility disabled");
+            PrintDoctorLine("INFO", "connection quality", "not checked; PowerToys compatibility disabled");
+        }
 
         if (config.screenWidth && config.screenHeight) {
             PrintDoctorLine("OK", "screen override", std::to_string(*config.screenWidth) + "x" + std::to_string(*config.screenHeight));
@@ -1919,6 +1952,17 @@ int HandleInitConfigCommand(const std::vector<std::string>& args) {
                 return 1;
             }
             config.port = *parsed;
+        } else if (arg == "--connection-mode" || arg == "--mode") {
+            const auto value = requireValue(arg.c_str());
+            if (!value) {
+                return 1;
+            }
+            const auto parsed = mwb::ParseConnectionMode(*value);
+            if (!parsed.has_value()) {
+                std::cerr << "ERR: Invalid connection mode. Use powertoys, inputflow, or hybrid." << std::endl;
+                return 1;
+            }
+            config.connectionMode = *parsed;
         } else if (arg == "--auto-connect") {
             config.autoConnectEnabled = true;
         } else if (arg == "--manual-only") {
