@@ -27,6 +27,8 @@ struct AppConfig {
     bool mprisMediaKeysEnabled{true};
     std::string mprisPlayer;
     bool latencyReport{false};
+    bool topologyRuntimeEnabled{false};
+    std::string topologyFile;
 };
 
 AppConfig LoadDefaultAppConfig();

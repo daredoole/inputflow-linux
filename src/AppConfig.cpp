@@ -352,6 +352,21 @@ bool ParseAppConfig(std::string_view text, AppConfig& outConfig, std::string* er
             continue;
         }
 
+        if (key == "topology_enabled" || key == "topology_runtime_enabled") {
+            const auto parsed = ParseConfigBool(value);
+            if (!parsed.has_value()) {
+                SetError(errorMessage, "Config key 'topology_enabled' expects true/false.");
+                return false;
+            }
+            outConfig.topologyRuntimeEnabled = *parsed;
+            continue;
+        }
+
+        if (key == "topology_file") {
+            outConfig.topologyFile = std::string(value);
+            continue;
+        }
+
         SetError(errorMessage, "Unknown config key '" + std::string(key) + "' on line " + std::to_string(lineNumber) + ".");
         return false;
     }
@@ -416,6 +431,8 @@ std::string RenderAppConfig(const AppConfig& config) {
     out << "mpris_media_keys_enabled=" << RenderBool(config.mprisMediaKeysEnabled) << '\n';
     out << "mpris_player=" << config.mprisPlayer << '\n';
     out << "latency_report=" << RenderBool(config.latencyReport) << '\n';
+    out << "topology_enabled=" << RenderBool(config.topologyRuntimeEnabled) << '\n';
+    out << "topology_file=" << config.topologyFile << '\n';
     return out.str();
 }
 
@@ -434,6 +451,7 @@ std::string RenderSampleAppConfig() {
     out << "# Relative key_file paths resolve against the directory containing config.ini.\n";
     out << "# Set auto_connect_enabled=false to keep the service idle until you re-enable it.\n";
     out << "# Set screen_width and screen_height to your local desktop size when needed.\n";
+    out << "# Set topology_enabled=true and topology_file=... to enable runtime topology handoff.\n";
     out << RenderAppConfig(sample);
     return out.str();
 }

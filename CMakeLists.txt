@@ -46,6 +46,7 @@ add_executable(mwb_client
     src/main.cpp
     src/PeerRecovery.cpp
     src/SecretStore.cpp
+    src/TopologyModel.cpp
     src/ClipboardManager.cpp
     src/CryptoHelper.cpp
     src/InputManager.cpp
@@ -85,6 +86,8 @@ include(CTest)
 find_package(PkgConfig QUIET)
 
 if (BUILD_TESTING)
+    find_program(PYTHON3_EXECUTABLE python3)
+
     add_executable(mwb_client_unit_tests
         tests/test_main.cpp
         src/AppConfig.cpp
@@ -124,6 +127,14 @@ if (BUILD_TESTING)
     target_include_directories(mwb_input_latency_tests PRIVATE src)
     target_compile_options(mwb_input_latency_tests PRIVATE -Wall -Wextra -Wpedantic)
     mwb_apply_sanitizers(mwb_input_latency_tests)
+
+    add_executable(mwb_topology_model_tests
+        tests/test_topology_model.cpp
+        src/TopologyModel.cpp
+    )
+    target_include_directories(mwb_topology_model_tests PRIVATE src)
+    target_compile_options(mwb_topology_model_tests PRIVATE -Wall -Wextra -Wpedantic)
+    mwb_apply_sanitizers(mwb_topology_model_tests)
 
     add_executable(mwb_mouse_trace_tests
         tests/test_mouse_trace.cpp
@@ -175,17 +186,34 @@ if (BUILD_TESTING)
     add_test(NAME mwb_inject_mouse_abs_tests COMMAND mwb_inject_mouse_abs_tests)
     add_test(NAME mwb_input_device_capability_tests COMMAND mwb_input_device_capability_tests)
     add_test(NAME mwb_input_latency_tests COMMAND mwb_input_latency_tests)
+    add_test(NAME mwb_topology_model_tests COMMAND mwb_topology_model_tests)
+    if (PYTHON3_EXECUTABLE)
+        add_test(NAME mwb_topology_config_docs
+            COMMAND "${PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/topology_config_docs_test.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/docs/topology.md"
+        )
+    endif()
     add_test(NAME mwb_mouse_trace_tests COMMAND mwb_mouse_trace_tests)
     add_test(NAME mwb_media_key_bridge_tests COMMAND mwb_media_key_bridge_tests)
     add_test(NAME mwb_protocol_security_tests COMMAND mwb_protocol_security_tests)
     add_test(NAME mwb_clipboard_socket_security_tests COMMAND mwb_clipboard_socket_security_tests)
     add_test(NAME mwb_client_help COMMAND mwb_client --help)
     add_test(NAME mwb_client_doctor COMMAND mwb_client doctor --config "${CMAKE_CURRENT_BINARY_DIR}/missing-doctor-config.ini")
+    add_test(NAME mwb_client_topology_explain
+        COMMAND mwb_client topology explain "${CMAKE_CURRENT_SOURCE_DIR}/tests/simple.topology"
+    )
     add_test(NAME mwb_client_doctor_categories
         COMMAND ${CMAKE_COMMAND}
             "-DMWB_CLIENT=$<TARGET_FILE:mwb_client>"
             "-DCONFIG_PATH=${CMAKE_CURRENT_BINARY_DIR}/missing-doctor-config.ini"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/doctor_categories.cmake"
+    )
+    add_test(NAME mwb_export_windows_pair_helper
+        COMMAND ${CMAKE_COMMAND}
+            "-DMWB_CLIENT=$<TARGET_FILE:mwb_client>"
+            "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/export_windows_pair"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/export_windows_pair_helper.cmake"
     )
     add_test(NAME mwb_client_doctor_invalid_config COMMAND mwb_client doctor --config "${CMAKE_CURRENT_SOURCE_DIR}/tests/invalid_config.ini")
     set_tests_properties(mwb_client_doctor_invalid_config PROPERTIES WILL_FAIL TRUE)

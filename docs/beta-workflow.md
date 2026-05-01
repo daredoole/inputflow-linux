@@ -12,7 +12,9 @@ Use the desktop controller for the guided path:
 
 1. Open **Settings** and enter the Windows host IP, local machine name, port, and exactly one authentication source: inline key, `key_file`, or Secret Service key ID.
 2. Use **Connection Behavior** to choose automatic reconnect behavior before starting the service.
-3. Export a Windows helper from Linux when the UI exposes the action, or use the CLI fallback:
+3. For one Linux/Fedora monitor, leave topology disabled and use the normal PowerToys layout path.
+4. Optionally run **Advanced Topology/Layout** only if you have multiple Linux displays, stacked/asymmetric edges, wrap behavior, or wrong-edge handoff problems.
+5. Export a Windows helper from Linux when the UI exposes the action, or use the CLI fallback:
 
 ```bash
 ./build/mwb_client export-windows-pair \
@@ -30,6 +32,27 @@ powershell -ExecutionPolicy Bypass -File .\inputflow-windows-pair.ps1
 Keep the exported `.ps1` private because it contains pairing material. Delete it after confirming Windows sees the Linux peer.
 
 ![Pairing helper walkthrough](screenshots/pairing-helper.svg)
+
+## Advanced Topology/Layout Wizard
+
+Open the wizard from the desktop controller only when the normal PowerToys layout is not enough:
+
+```bash
+./mwb-desktop-ui.sh layout-wizard
+```
+
+The wizard asks for a plain-language layout, Linux/Windows machine names, display size, wrap policy, and output file name. It shows a preview of the exact topology file before making changes. For one Linux monitor, prefer **Use PowerToys Layout Only** instead.
+
+Only after confirmation, the wizard writes the topology file under `~/.config/mwb-client/` and updates `config.ini`:
+
+```ini
+topology_enabled=true
+topology_file=/home/example/.config/mwb-client/topology-side-by-side.topology
+```
+
+When topology is enabled, configured cross-machine edge transitions are enforced at runtime. Same-machine transitions remain local, and invalid topology falls back to the existing behavior with a warning.
+
+Use **Explain Current Topology** after saving. It translates the topology into English and reminds users that Windows PowerToys still owns the Windows-side machine layout. Keep the PowerToys machine placement and the InputFlow topology edges consistent.
 
 ## Health Check
 

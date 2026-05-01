@@ -15,10 +15,14 @@ Recommended first-run flow for most users:
 2. **Launch Setup UI:** Run `./mwb-desktop-ui.sh menu`
 3. **Configure:**
    - Go to **Settings** -> Enter your Windows Host IP and Security Key.
-4. **Pair with Windows:**
+4. **Use PowerToys layout for normal setups:**
+   - If this Linux/Fedora machine has one monitor, do not configure topology. Let Windows PowerToys Mouse Without Borders own the Linux/Windows machine placement.
+   - If topology was enabled while testing, choose **Use PowerToys Layout Only** to set `topology_enabled=false`.
+5. **Pair with Windows:**
    - In the same UI, use the **Export Helper** option.
    - Run the exported `.ps1` script on your Windows machine to register the Linux peer.
-5. **Start:** Choose **Start Service** or launch the tray with `./build/mwb_tray`.
+6. **Start:** Choose **Start Service** or launch the tray with `./build/mwb_tray`.
+7. **Advanced layouts only:** Open **Advanced Topology/Layout** if you have multiple Linux monitors, stacked/asymmetric edges, wrap behavior, or wrong-edge handoff problems.
 
 For the full beta setup, health-check, diagnostics, connection-quality, and packaging-verification workflow, see [docs/beta-workflow.md](docs/beta-workflow.md).
 
@@ -98,9 +102,13 @@ See the full [documentation section](#detailed-documentation) for environment va
 User-facing beta operations:
 
 - [Guided Windows pairing and export helper](docs/beta-workflow.md#guided-pairing-and-export-helper)
+- [Topology/layout wizard](docs/beta-workflow.md#topologylayout-wizard)
 - [Health checks and diagnostics bundle](docs/beta-workflow.md#health-check)
 - [Connection quality and latency reporting](docs/beta-workflow.md#connection-quality)
 - [Packaging verification](docs/beta-workflow.md#packaging-verification)
+- [Topology config contract and layout wizard expectations](docs/topology.md)
+- [Migration from other keyboard/mouse sharing tools](docs/migration.md)
+- [Compatibility matrix and platform caveats](docs/compatibility.md)
 
 <a name="detailed-documentation"></a>
 ## Detailed Documentation
@@ -109,7 +117,11 @@ User-facing beta operations:
 This repository started as a fork of [chrischip/mwb-client-linux](https://github.com/chrischip/mwb-client-linux) and has been substantially expanded with service management, rich clipboard support, and recovery tooling.
 
 ### Configuration (`config.ini`)
-Supports `key_file`, `key_secret_id` (keyring), `screen_width/height` overrides, and more. Default path: `~/.config/mwb-client/config.ini`.
+Supports `key_file`, `key_secret_id` (keyring), `screen_width/height` overrides, `topology_enabled`, `topology_file`, and more. Default path: `~/.config/mwb-client/config.ini`.
+
+Display-level topology is a separate opt-in contract. The default runtime remains MWB-compatible machine placement unless topology is explicitly enabled; see [docs/topology.md](docs/topology.md) for examples, wrap policies, validation, and cross-machine handoff behavior.
+
+Windows PowerToys still owns the Windows-side machine layout. InputFlow topology does not edit PowerToys per-display geometry; it only tells Linux which local display edge should hand off back to Windows. Keep the PowerToys machine position and the InputFlow topology links consistent.
 
 ### Screen Sizing
 The client detects screen size in this order:

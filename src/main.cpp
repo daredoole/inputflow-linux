@@ -32,6 +32,7 @@
 #include "Discovery.h"
 #include "PeerRecovery.h"
 #include "SecretStore.h"
+#include "TopologyModel.h"
 
 namespace {
 
@@ -58,8 +59,9 @@ void PrintGeneralUsage(std::ostream& out, const char* argv0) {
         << " [--latency-report]\n";
     out << "       " << binary << " discover [--state PATH] [--port PORT] [--timeout-ms MS] [--max-hosts N]\n";
     out << "       " << binary << " doctor [--config PATH] [--state PATH]\n";
+    out << "       " << binary << " topology explain [PATH] [--config PATH]\n";
     out << "       " << binary << " init-config [--config PATH] [--force] [--host IP] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME] [--port PORT]\n";
-    out << "       " << binary << " export-windows-pair [--config PATH] [--output PATH] [--force] [--linux-ip IP] [--position auto|top-left|top-right|bottom-left|bottom-right] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME]\n";
+    out << "       " << binary << " export-windows-pair [--config PATH] [--output PATH] [--force] [--dry-run] [--check] [--linux-ip IP] [--position auto|top-left|top-right|bottom-left|bottom-right] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME]\n";
     out << "       " << binary << " install-user-service [--config PATH] [--unit PATH] [--force]\n";
     out << "       " << binary << " secret-store [--config PATH] --secret-id ID [--key KEY | --key-file PATH | --stdin]\n";
     out << "       " << binary << " secret-clear [--config PATH] [--secret-id ID]\n";
@@ -605,23 +607,52 @@ std::string RenderWindowsPairScript(const std::string& peerName,
                                     const std::string& peerPosition) {
     std::ostringstream out;
     out
-        << "param([switch]$ClosePowerToys)\n\n"
+        << "param([switch]$ClosePowerToys, [switch]$DryRun, [switch]$Check)\n\n"
         << "$ErrorActionPreference = 'Stop'\n"
         << "$PeerName = '" << EscapePowerShellSingleQuoted(peerName) << "'\n"
         << "$PeerIp = '" << EscapePowerShellSingleQuoted(peerIp) << "'\n"
         << "$SecurityKey = '" << EscapePowerShellSingleQuoted(securityKey) << "'\n\n"
         << "$PeerPosition = '" << EscapePowerShellSingleQuoted(peerPosition) << "'\n\n"
-        << "function Stop-PowerToysProcesses {\n"
-        << "    $names = @('PowerToys', 'PowerToys.MouseWithoutBorders', 'MouseWithoutBorders')\n"
-        << "    foreach ($name in $names) {\n"
-        << "        Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue\n"
-        << "    }\n"
+        << "if ($ClosePowerToys) {\n"
+        << "    Write-Warning 'The -ClosePowerToys switch is accepted for compatibility but this helper no longer stops processes. Close PowerToys manually before writing if needed.'\n"
         << "}\n\n"
         << "function Ensure-ArrayLength {\n"
         << "    param([System.Collections.IList]$List, [int]$Length)\n"
         << "    while ($List.Count -lt $Length) {\n"
         << "        $List.Add('') | Out-Null\n"
         << "    }\n"
+        << "}\n\n"
+        << "function Assert-ValueSetting {\n"
+        << "    param($Props, [string]$Name)\n"
+        << "    $property = $Props.PSObject.Properties[$Name]\n"
+        << "    if ($null -eq $property) {\n"
+        << "        throw ('Unsupported Mouse Without Borders settings schema: missing properties.' + $Name + '.')\n"
+        << "    }\n"
+        << "    if ($null -eq $property.Value -or $null -eq $property.Value.PSObject.Properties['value']) {\n"
+        << "        throw ('Unsupported Mouse Without Borders settings schema: properties.' + $Name + '.value is missing.')\n"
+        << "    }\n"
+        << "}\n\n"
+        << "function Assert-SettingsSchema {\n"
+        << "    param($Settings)\n"
+        << "    if ($null -eq $Settings) {\n"
+        << "        throw 'Unsupported Mouse Without Borders settings schema: JSON root is empty.'\n"
+        << "    }\n"
+        << "    if ($null -ne $Settings.PSObject.Properties['version']) {\n"
+        << "        $versionText = [string]$Settings.version\n"
+        << "        if ([string]::IsNullOrWhiteSpace($versionText) -or $versionText -notmatch '^\\d+(\\.\\d+){0,3}$') {\n"
+        << "            throw ('Unsupported Mouse Without Borders settings version: ' + $versionText)\n"
+        << "        }\n"
+        << "    }\n"
+        << "    if ($null -eq $Settings.PSObject.Properties['properties'] -or $null -eq $Settings.properties) {\n"
+        << "        throw 'Unsupported Mouse Without Borders settings schema: properties object is missing.'\n"
+        << "    }\n"
+        << "    $props = $Settings.properties\n"
+        << "    if ($null -eq $props.PSObject.Properties['MachineMatrixString']) {\n"
+        << "        throw 'Unsupported Mouse Without Borders settings schema: properties.MachineMatrixString is missing.'\n"
+        << "    }\n"
+        << "    Assert-ValueSetting -Props $props -Name 'SecurityKey'\n"
+        << "    Assert-ValueSetting -Props $props -Name 'MachinePool'\n"
+        << "    Assert-ValueSetting -Props $props -Name 'Name2IP'\n"
         << "}\n\n"
         << "function Parse-MachinePool {\n"
         << "    param([string]$Value)\n"
@@ -719,20 +750,11 @@ std::string RenderWindowsPairScript(const std::string& peerName,
         << "if (-not (Test-Path -LiteralPath $settingsPath)) {\n"
         << "    throw 'Mouse Without Borders settings.json was not found. Start PowerToys once before running this helper.'\n"
         << "}\n\n"
-        << "if ($ClosePowerToys) {\n"
-        << "    Stop-PowerToysProcesses\n"
-        << "}\n\n"
-        << "$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'\n"
-        << "$backupPath = $settingsPath + '.bak-' + $timestamp\n"
-        << "Copy-Item -LiteralPath $settingsPath -Destination $backupPath -Force\n\n"
         << "$jsonText = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8\n"
         << "$settings = $jsonText | ConvertFrom-Json\n"
+        << "Assert-SettingsSchema -Settings $settings\n"
         << "$props = $settings.properties\n\n"
-        << "if ($null -eq $props.SecurityKey) {\n"
-        << "    $props | Add-Member -NotePropertyName SecurityKey -NotePropertyValue ([pscustomobject]@{ value = $SecurityKey })\n"
-        << "} else {\n"
-        << "    $props.SecurityKey.value = $SecurityKey\n"
-        << "}\n\n"
+        << "$props.SecurityKey.value = $SecurityKey\n\n"
         << "$matrix = New-Object System.Collections.ArrayList\n"
         << "foreach ($item in $props.MachineMatrixString) {\n"
         << "    [void]$matrix.Add([string]$item)\n"
@@ -788,8 +810,6 @@ std::string RenderWindowsPairScript(const std::string& peerName,
         << "$existingPool = ''\n"
         << "if ($null -ne $props.MachinePool -and $null -ne $props.MachinePool.value) {\n"
         << "    $existingPool = [string]$props.MachinePool.value\n"
-        << "} elseif ($null -eq $props.MachinePool) {\n"
-        << "    $props | Add-Member -NotePropertyName MachinePool -NotePropertyValue ([pscustomobject]@{ value = '' })\n"
         << "}\n\n"
         << "$selfId = 'NONE'\n"
         << "$otherEntries = New-Object System.Collections.ArrayList\n"
@@ -825,13 +845,30 @@ std::string RenderWindowsPairScript(const std::string& peerName,
         << "$existingName2IP = ''\n"
         << "if ($null -ne $props.Name2IP -and $null -ne $props.Name2IP.value) {\n"
         << "    $existingName2IP = [string]$props.Name2IP.value\n"
-        << "} elseif ($null -eq $props.Name2IP) {\n"
-        << "    $props | Add-Member -NotePropertyName Name2IP -NotePropertyValue ([pscustomobject]@{ value = '' })\n"
         << "}\n"
         << "$props.Name2IP.value = Upsert-Name2IP -Value $existingName2IP -Name $PeerName -Ip $PeerIp\n\n"
+        << "if ($Check) {\n"
+        << "    Write-Host 'Check passed: settings path, schema, version, and requested peer placement are compatible.'\n"
+        << "    Write-Host 'No changes written.'\n"
+        << "    Write-Host ('Planned MachineMatrixString: ' + (($props.MachineMatrixString | ForEach-Object { [string]$_ }) -join ','))\n"
+        << "    Write-Host ('Planned MachinePool: ' + [string]$props.MachinePool.value)\n"
+        << "    Write-Host ('Planned Name2IP: ' + [string]$props.Name2IP.value)\n"
+        << "    return\n"
+        << "}\n"
+        << "if ($DryRun) {\n"
+        << "    Write-Host 'Dry run: no changes written.'\n"
+        << "    Write-Host ('Planned MachineMatrixString: ' + (($props.MachineMatrixString | ForEach-Object { [string]$_ }) -join ','))\n"
+        << "    Write-Host ('Planned MachinePool: ' + [string]$props.MachinePool.value)\n"
+        << "    Write-Host ('Planned Name2IP: ' + [string]$props.Name2IP.value)\n"
+        << "    return\n"
+        << "}\n\n"
+        << "$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'\n"
+        << "$backupPath = $settingsPath + '.bak-' + $timestamp\n"
+        << "Copy-Item -LiteralPath $settingsPath -Destination $backupPath -Force\n"
         << "$settings | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $settingsPath -Encoding UTF8\n\n"
         << "Write-Host ('Updated settings: ' + $settingsPath)\n"
         << "Write-Host ('Backup written: ' + $backupPath)\n"
+        << "Write-Host ('Restore command: Copy-Item -LiteralPath \"' + $backupPath + '\" -Destination \"' + $settingsPath + '\" -Force')\n"
         << "Write-Host ('SecurityKey synchronized for ' + $PeerName)\n"
         << "Write-Host ('PeerPosition: ' + $PeerPosition)\n"
         << "Write-Host ('MachineMatrixString: ' + (($props.MachineMatrixString | ForEach-Object { [string]$_ }) -join ','))\n"
@@ -925,19 +962,38 @@ std::optional<std::string> ProbeReachableIpv4Host(const std::string& host, int p
 }
 
 std::optional<std::string> TryRecoverHostFromKnownPeers(const mwb::AppConfig& config,
-                                                        const mwb::AppState& state) {
+                                                         const mwb::AppState& state) {
     const bool configuredHostIsIpv4 = mwb::IsIpv4Literal(config.host);
+    const auto knownPeerHosts = mwb::CollectRecoveryCandidateHosts(state, config.host, config.port);
+    for (const auto& host : knownPeerHosts) {
+        if (auto reachable = ProbeReachableIpv4Host(host, config.port, 250)) {
+            std::cout << "[RECOVERY] Configured peer " << config.host
+                      << " has a verified same-name address "
+                      << *reachable;
+            if (configuredHostIsIpv4) {
+                std::cout << "; using name-priority recovery before trusting the configured IP";
+            } else {
+                std::cout << "; reusing verified peer address";
+            }
+            std::cout << std::endl;
+            return reachable;
+        }
+    }
+
     if (configuredHostIsIpv4 && ProbeReachableIpv4Host(config.host, config.port, 200).has_value()) {
         return std::nullopt;
     }
 
-    for (const auto& host : mwb::CollectRecoveryCandidateHosts(state, config.host, config.port)) {
-        if (auto reachable = ProbeReachableIpv4Host(host, config.port, 250)) {
-            std::cout << "[RECOVERY] Configured peer " << config.host
-                      << " is unavailable; reusing verified peer address "
-                      << *reachable << std::endl;
-            return reachable;
-        }
+    mwb::DiscoveryOptions discoveryOptions;
+    discoveryOptions.port = static_cast<uint16_t>(config.port);
+    discoveryOptions.connectTimeoutMs = 200;
+    discoveryOptions.maxHostsPerSubnet = 256;
+    const auto candidates = mwb::DiscoverLanCandidates(discoveryOptions);
+    for (const auto& host : mwb::CollectRecoveryDiscoveredHosts(state, config.host, config.port, candidates)) {
+        std::cout << "[RECOVERY] Configured peer " << config.host
+                  << " is unavailable; using discovered address "
+                  << host << " for the approved peer name" << std::endl;
+        return host;
     }
 
     return std::nullopt;
@@ -1133,6 +1189,8 @@ int RunClient(const mwb::AppConfig& config,
     options.debugKeyLogging = IsTruthyEnv("MWB_DEBUG_KEYS");
     options.debugShortcutLogging = IsTruthyEnv("MWB_DEBUG_SHORTCUTS");
     options.latencyReport = runtimeConfig.latencyReport;
+    options.topologyRuntimeEnabled = runtimeConfig.topologyRuntimeEnabled;
+    options.topologyFilePath = runtimeConfig.topologyFile;
     options.onSessionEstablished = [&](const std::string& host, int port, const std::string& remoteName, uint32_t, uint32_t localMachineId) {
         std::lock_guard<std::mutex> lock(stateMutex);
         mwb::MarkSessionEstablished(state, host, port, remoteName, localMachineId, CurrentEpochSeconds());
@@ -1545,7 +1603,8 @@ int HandleDiscoverCommand(const std::string& binary, const std::vector<std::stri
                   << "  name="
                   << (candidate.hostName.empty()
                           ? "(unknown)"
-                          : (candidate.hostNameVerified ? candidate.hostName : candidate.hostName + " (unverified)"))
+                          : candidate.hostName)
+                  << "  verified=" << (candidate.hostNameVerified ? "yes" : "no")
                   << "  iface=" << candidate.interfaceName;
         std::cout << std::endl;
     }
@@ -1907,6 +1966,8 @@ int HandleExportWindowsPairCommand(const std::vector<std::string>& args) {
     std::optional<std::filesystem::path> keyFileBaseDir;
     std::filesystem::path outputPath;
     bool force = false;
+    bool dryRun = false;
+    bool checkOnly = false;
     bool outputRequested = false;
     std::optional<std::string> linuxIpOverride;
     std::string peerPosition = "Auto";
@@ -1963,6 +2024,10 @@ int HandleExportWindowsPairCommand(const std::vector<std::string>& args) {
             outputPath = *value;
         } else if (arg == "--force") {
             force = true;
+        } else if (arg == "--dry-run") {
+            dryRun = true;
+        } else if (arg == "--check") {
+            checkOnly = true;
         } else if (arg == "--linux-ip") {
             const auto value = requireValue("--linux-ip");
             if (!value) {
@@ -2041,12 +2106,20 @@ int HandleExportWindowsPairCommand(const std::vector<std::string>& args) {
                      ("inputflow-windows-pair-" + SanitizeFileStem(config.machineName) + ".ps1");
     }
 
-    if (std::filesystem::exists(outputPath) && !force) {
+    if (!dryRun && !checkOnly && std::filesystem::exists(outputPath) && !force) {
         std::cerr << "ERR: Output file already exists: " << outputPath << ". Use --force to overwrite." << std::endl;
         return 1;
     }
 
     const std::string script = RenderWindowsPairScript(config.machineName, linuxIp, config.key, peerPosition);
+
+    if (dryRun || checkOnly) {
+        std::cout << script;
+        if (checkOnly) {
+            std::cerr << "INFO: No file written. Save this helper on Windows and run it with -Check to validate PowerToys Mouse Without Borders settings without writing." << std::endl;
+        }
+        return 0;
+    }
 
     try {
         const std::filesystem::path parent = outputPath.parent_path();
@@ -2085,9 +2158,16 @@ int HandleExportWindowsPairCommand(const std::vector<std::string>& args) {
     std::cout << "Wrote Windows pairing helper to " << outputPath << std::endl;
     std::cout << "Run on Windows:" << std::endl;
     std::cout << "  powershell -ExecutionPolicy Bypass -File .\\"
-              << outputPath.filename().string() << " -ClosePowerToys" << std::endl;
+              << outputPath.filename().string() << std::endl;
+    std::cout << "Check without writing:" << std::endl;
+    std::cout << "  powershell -ExecutionPolicy Bypass -File .\\"
+              << outputPath.filename().string() << " -Check" << std::endl;
+    std::cout << "Dry-run planned changes:" << std::endl;
+    std::cout << "  powershell -ExecutionPolicy Bypass -File .\\"
+              << outputPath.filename().string() << " -DryRun" << std::endl;
     std::cout << "This helper synchronizes the shared key plus MachineMatrixString, MachinePool, and Name2IP for '"
               << config.machineName << "'." << std::endl;
+    std::cout << "On update, the helper prints a backup path and restore command before reporting success." << std::endl;
     std::cout << "Configured peer position: " << peerPosition << std::endl;
     return 0;
 }
@@ -2404,6 +2484,147 @@ int HandleInstallUserServiceCommand(const std::vector<std::string>& args) {
     return 0;
 }
 
+const char* PlainEdgeName(mwb::EdgeDirection edge) {
+    switch (edge) {
+        case mwb::EdgeDirection::Left:
+            return "left";
+        case mwb::EdgeDirection::Right:
+            return "right";
+        case mwb::EdgeDirection::Up:
+            return "top";
+        case mwb::EdgeDirection::Down:
+            return "bottom";
+    }
+    return "edge";
+}
+
+int HandleTopologyCommand(const std::vector<std::string>& args) {
+    if (args.empty() || args[0] == "--help" || args[0] == "-h") {
+        std::cout << "Usage: mwb_client topology explain [PATH] [--config PATH]\n";
+        std::cout << "Explains a topology file in plain English. If PATH is omitted, topology_file is read from config.\n";
+        return args.empty() ? 1 : 0;
+    }
+
+    if (args[0] != "explain") {
+        std::cerr << "ERR: Unknown topology subcommand: " << args[0] << std::endl;
+        return 1;
+    }
+
+    std::filesystem::path configPath = mwb::DefaultConfigPath();
+    std::filesystem::path topologyPath;
+
+    for (std::size_t index = 1; index < args.size(); ++index) {
+        const std::string& arg = args[index];
+        auto requireValue = [&](const char* flag) -> std::optional<std::string> {
+            if (index + 1 >= args.size()) {
+                std::cerr << "ERR: Missing value for " << flag << "." << std::endl;
+                return std::nullopt;
+            }
+            return args[++index];
+        };
+
+        if (arg == "--config") {
+            const auto value = requireValue("--config");
+            if (!value) {
+                return 1;
+            }
+            configPath = *value;
+        } else if (arg.rfind("--", 0) == 0) {
+            std::cerr << "ERR: Unknown topology explain option: " << arg << std::endl;
+            return 1;
+        } else if (topologyPath.empty()) {
+            topologyPath = arg;
+        } else {
+            std::cerr << "ERR: topology explain accepts only one topology file path." << std::endl;
+            return 1;
+        }
+    }
+
+    mwb::AppConfig config;
+    if (topologyPath.empty()) {
+        std::string configError;
+        if (!mwb::LoadConfigFile(configPath, config, configError)) {
+            std::cerr << "ERR: " << configError << std::endl;
+            return 1;
+        }
+        if (!config.topologyRuntimeEnabled) {
+            std::cout << "Topology is disabled in " << configPath << ". Set topology_enabled=true to enforce it." << std::endl;
+        }
+        if (config.topologyFile.empty()) {
+            std::cerr << "ERR: No topology file configured. Set topology_file=... or pass a file path." << std::endl;
+            return 1;
+        }
+        topologyPath = config.topologyFile;
+    }
+
+    mwb::TopologyModel topology;
+    std::string error;
+    if (!mwb::LoadTopologyConfig(topologyPath, topology, &error)) {
+        std::cerr << "ERR: " << error << std::endl;
+        return 1;
+    }
+
+    const auto issues = topology.validate();
+    std::cout << "Topology file: " << topologyPath << "\n\n";
+    if (!issues.empty()) {
+        std::cout << "Status: INVALID\n";
+        for (const auto& issue : issues) {
+            std::cout << "- " << mwb::topologyIssueCodeName(issue.code) << ": " << issue.message << "\n";
+        }
+        return 1;
+    }
+
+    std::cout << "Status: valid\n";
+    std::cout << "Wrap: ";
+    switch (topology.wrapPolicy()) {
+        case mwb::WrapPolicy::None:
+            std::cout << "off. Only explicit links move between displays/machines.\n";
+            break;
+        case mwb::WrapPolicy::Horizontal:
+            std::cout << "horizontal. Unlinked left/right edges may loop within the same machine.\n";
+            break;
+        case mwb::WrapPolicy::Vertical:
+            std::cout << "vertical. Unlinked top/bottom edges may loop within the same machine.\n";
+            break;
+        case mwb::WrapPolicy::Both:
+            std::cout << "both. Unlinked edges may loop within the same machine.\n";
+            break;
+    }
+
+    std::cout << "\nMachines and displays:\n";
+    for (const auto& display : topology.displays()) {
+        std::cout << "- " << display.machineId << " display " << display.id
+                  << ": " << display.width << "x" << display.height
+                  << " at " << display.x << "," << display.y << "\n";
+    }
+
+    std::cout << "\nEdge behavior:\n";
+    if (topology.borderLinks().empty()) {
+        std::cout << "- No explicit edge links configured.\n";
+    }
+    for (const auto& link : topology.borderLinks()) {
+        const auto sourceMachine = topology.machineIdForDisplay(link.sourceDisplayId).value_or("unknown");
+        const auto targetMachine = topology.machineIdForDisplay(link.targetDisplayId).value_or("unknown");
+        std::cout << "- Leave the " << PlainEdgeName(link.exitEdge)
+                  << " edge of " << sourceMachine << " display " << link.sourceDisplayId
+                  << " -> enter the " << PlainEdgeName(link.entryEdge)
+                  << " edge of " << targetMachine << " display " << link.targetDisplayId;
+        if (sourceMachine == targetMachine) {
+            std::cout << " (local display move)";
+        } else {
+            std::cout << " (cross-machine handoff)";
+        }
+        std::cout << "\n";
+    }
+
+    std::cout << "\nPowerToys layout relationship:\n";
+    std::cout << "- Windows PowerToys Mouse Without Borders still owns the Windows-side machine layout.\n";
+    std::cout << "- InputFlow topology does not edit PowerToys settings.json or per-display layout on Windows.\n";
+    std::cout << "- Keep the PowerToys machine position consistent with the cross-machine links above; use export-windows-pair to seed that machine-level placement.\n";
+    std::cout << "- InputFlow topology only controls how the Linux side resolves Linux displays and returns handoff events once topology_enabled=true.\n";
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2417,6 +2638,7 @@ int main(int argc, char** argv) {
     if (argc >= 3 && argc <= 4 && std::string(argv[1]) != "run" &&
         std::string(argv[1]) != "discover" &&
         std::string(argv[1]) != "doctor" &&
+        std::string(argv[1]) != "topology" &&
         std::string(argv[1]) != "init-config" &&
         std::string(argv[1]) != "export-windows-pair" &&
         std::string(argv[1]) != "install-user-service" &&
@@ -2443,6 +2665,9 @@ int main(int argc, char** argv) {
     }
     if (command == "doctor") {
         return HandleDoctorCommand(args);
+    }
+    if (command == "topology") {
+        return HandleTopologyCommand(args);
     }
     if (command == "init-config") {
         return HandleInitConfigCommand(args);
