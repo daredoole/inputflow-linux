@@ -66,8 +66,23 @@ jobs:
       image: fedora:latest
 
     steps:
-      - name: Install Git for checkout
-        run: dnf install -y git
+      - name: Install dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            ccache \
+            cmake \
+            gcc-c++ \
+            git \
+            gtk3-devel \
+            libayatana-appindicator3-devel \
+            libX11-devel \
+            make \
+            ninja-build \
+            openssl-devel \
+            pkgconf-pkg-config \
+            rpm-build \
+            systemd-rpm-macros \
+            zlib-devel
 
       - name: Check out source
         uses: actions/checkout@v4
@@ -79,23 +94,6 @@ jobs:
           key: ${{ runner.os }}-${{ github.job }}-ccache-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-${{ github.job }}-ccache-
-
-      - name: Install dependencies
-        run: |
-          dnf install -y \
-            ccache \
-            cmake \
-            gcc-c++ \
-            gtk3-devel \
-            libayatana-appindicator3-devel \
-            libX11-devel \
-            make \
-            ninja-build \
-            openssl-devel \
-            pkgconf-pkg-config \
-            rpm-build \
-            systemd-rpm-macros \
-            zlib-devel
 
       - name: Validate RPM packaging, build, and tests
         run: |
