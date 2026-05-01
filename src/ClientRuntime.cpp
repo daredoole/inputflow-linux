@@ -333,8 +333,8 @@ void ClientRuntime::ConfigureTopologyPreview(const ScreenSize& screenSize) {
                const std::string& targetMachineId) {
             if (m_androidRelay &&
                 targetMachineId == m_options.androidRelay.peerName &&
+                TrySetAndroidControlActive(true) &&
                 TrySendAndroidMouse(mouse)) {
-                m_androidRelayActive = true;
                 return true;
             }
             return m_network && m_network->SendMouse(mouse);
