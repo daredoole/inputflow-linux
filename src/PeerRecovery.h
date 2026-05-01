@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "AppState.h"
+#include "Discovery.h"
 
 namespace mwb {
 
@@ -22,5 +23,9 @@ std::vector<std::string> CollectRecoveryPeerHosts(const AppState& state,
 std::vector<std::string> CollectRecoveryCandidateHosts(const AppState& state,
                                                        std::string_view configuredHost,
                                                        int port);
+std::vector<std::string> CollectRecoveryDiscoveredHosts(const AppState& state,
+                                                       std::string_view configuredHost,
+                                                       int port,
+                                                       const std::vector<DiscoveryCandidate>& candidates);
 
 } // namespace mwb

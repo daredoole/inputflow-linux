@@ -1,0 +1,7 @@
+wrap=none
+machine=linux
+machine=windows
+display=linux-1,linux,0,0,1920,1080
+display=windows-1,windows,1920,0,1920,1080
+link=linux-1,right,windows-1,left
+link=windows-1,left,linux-1,right
