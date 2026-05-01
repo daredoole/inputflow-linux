@@ -1,0 +1,97 @@
+name: Beta bug report
+description: Report an InputFlow Linux beta problem with PowerToys Mouse Without Borders.
+title: "[Beta Bug]: "
+labels: ["bug", "beta"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Attach the diagnostics bundle from `scripts/inputflow-diagnostics-bundle.sh` when possible. Review it before posting publicly; the bundle redacts secrets by best effort.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Problem summary
+      description: What failed, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics bundle
+      description: Attach the generated archive or paste the path/name if sharing privately.
+      placeholder: inputflow-diagnostics-YYYYMMDD-HHMMSS-PID.tar.gz
+    validations:
+      required: true
+  - type: input
+    id: linux-distro
+    attributes:
+      label: Linux distro and version
+      placeholder: Fedora 40, Ubuntu 24.04, Arch, etc.
+    validations:
+      required: true
+  - type: dropdown
+    id: session-type
+    attributes:
+      label: Linux session type
+      options:
+        - X11
+        - Wayland
+        - XWayland/mixed
+        - Unknown
+    validations:
+      required: true
+  - type: input
+    id: desktop
+    attributes:
+      label: Desktop/compositor
+      placeholder: GNOME, KDE Plasma, Sway, Hyprland, etc.
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+  - type: input
+    id: powertoys-version
+    attributes:
+      label: PowerToys version
+      placeholder: v0.xx.x
+    validations:
+      required: true
+  - type: textarea
+    id: monitor-layout
+    attributes:
+      label: Monitor and machine layout
+      description: Include machine order and display layout, for example AAB, BAA, ABA, stacked, mixed DPI/resolution, wrap on/off.
+    validations:
+      required: true
+  - type: dropdown
+    id: auth-source
+    attributes:
+      label: Linux key source
+      options:
+        - key_file
+        - key_secret_id
+        - inline key
+        - not configured
+        - unknown
+  - type: dropdown
+    id: clipboard
+    attributes:
+      label: Clipboard mode
+      options:
+        - enabled send/receive
+        - enabled receive-only
+        - disabled
+        - unknown
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Start PowerToys Mouse Without Borders on Windows.
+        2. Start InputFlow on Linux.
+        3. Move cursor from ...
+    validations:
+      required: true

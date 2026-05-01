@@ -146,6 +146,95 @@ redacted_copy_or_note() {
   } >"$output_file"
 }
 
+json_escape() {
+  local value="${1:-}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "$value"
+}
+
+json_string() {
+  printf '"%s"' "$(json_escape "${1:-}")"
+}
+
+json_bool() {
+  if [[ "${1:-}" == "yes" || "${1:-}" == "true" || "${1:-}" == "1" ]]; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+config_value() {
+  local lookup="$1"
+  local line trimmed key value
+  [[ -r "$CONFIG_PATH" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    [[ -z "$trimmed" || "$trimmed" == \#* || "$trimmed" == \;* || "$trimmed" != *"="* ]] && continue
+    key="${trimmed%%=*}"
+    value="${trimmed#*=}"
+    key="${key%"${key##*[![:space:]]}"}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    if [[ "$key" == "$lookup" ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done <"$CONFIG_PATH"
+}
+
+write_json_summary() {
+  local output_file="$1"
+  local host machine_name port key_source clipboard_enabled clipboard_send_enabled screen_width screen_height
+  local config_present=no config_readable=no state_present=no state_readable=no uinput_present=no uinput_writable=no uinput_module=no
+  local peer_lines=0
+
+  [[ -e "$CONFIG_PATH" ]] && config_present=yes
+  [[ -r "$CONFIG_PATH" ]] && config_readable=yes
+  [[ -e "$STATE_PATH" ]] && state_present=yes
+  [[ -r "$STATE_PATH" ]] && state_readable=yes
+  [[ -e /dev/uinput ]] && uinput_present=yes
+  [[ -w /dev/uinput ]] && uinput_writable=yes
+  [[ -d /sys/module/uinput ]] && uinput_module=yes
+  if [[ -r "$STATE_PATH" ]]; then
+    peer_lines="$(grep -c '^peer=' "$STATE_PATH" 2>/dev/null || true)"
+    peer_lines="${peer_lines:-0}"
+  fi
+
+  host="$(config_value host)"
+  machine_name="$(config_value machine_name)"
+  port="$(config_value port)"
+  clipboard_enabled="$(config_value clipboard_enabled)"
+  clipboard_send_enabled="$(config_value clipboard_send_enabled)"
+  screen_width="$(config_value screen_width)"
+  screen_height="$(config_value screen_height)"
+  if [[ -n "$(config_value key_secret_id)" ]]; then
+    key_source="secret_service"
+  elif [[ -n "$(config_value key_file)" ]]; then
+    key_source="key_file"
+  elif [[ -n "$(config_value key)" ]]; then
+    key_source="inline"
+  else
+    key_source="missing"
+  fi
+
+  {
+    printf '{\n'
+    printf '  "schema_version": 1,\n'
+    printf '  "created_at": '; json_string "$(date -Is 2>/dev/null || date)"; printf ',\n'
+    printf '  "config": {"path": '; json_string "$CONFIG_PATH_DISPLAY"; printf ', "present": '; json_bool "$config_present"; printf ', "readable": '; json_bool "$config_readable"; printf ', "host_configured": '; [[ -n "$host" ]] && printf true || printf false; printf ', "machine_name_configured": '; [[ -n "$machine_name" ]] && printf true || printf false; printf ', "port": '; json_string "$port"; printf ', "key_source": '; json_string "$key_source"; printf ', "clipboard_enabled": '; json_string "$clipboard_enabled"; printf ', "clipboard_send_enabled": '; json_string "$clipboard_send_enabled"; printf ', "screen_override": '; json_string "${screen_width}x${screen_height}"; printf '},\n'
+    printf '  "state": {"path": '; json_string "$STATE_PATH_DISPLAY"; printf ', "present": '; json_bool "$state_present"; printf ', "readable": '; json_bool "$state_readable"; printf ', "peer_lines": '; printf '%s' "$peer_lines"; printf '},\n'
+    printf '  "session": {"xdg_session_type": '; json_string "${XDG_SESSION_TYPE:-}"; printf ', "xdg_current_desktop": '; json_string "${XDG_CURRENT_DESKTOP:-}"; printf ', "desktop_session": '; json_string "${DESKTOP_SESSION:-}"; printf ', "wayland_display_set": '; [[ -n "${WAYLAND_DISPLAY:-}" ]] && printf true || printf false; printf ', "display_set": '; [[ -n "${DISPLAY:-}" ]] && printf true || printf false; printf ', "dbus_session_bus_set": '; [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] && printf true || printf false; printf '},\n'
+    printf '  "input": {"uinput_present": '; json_bool "$uinput_present"; printf ', "uinput_writable": '; json_bool "$uinput_writable"; printf ', "uinput_module_loaded": '; json_bool "$uinput_module"; printf '},\n'
+    printf '  "tools": {"wl_copy": '; have wl-copy && printf true || printf false; printf ', "wl_paste": '; have wl-paste && printf true || printf false; printf ', "xclip": '; have xclip && printf true || printf false; printf ', "xsel": '; have xsel && printf true || printf false; printf ', "secret_tool": '; have secret-tool && printf true || printf false; printf ', "systemctl": '; have systemctl && printf true || printf false; printf ', "journalctl": '; have journalctl && printf true || printf false; printf ', "ip": '; have ip && printf true || printf false; printf ', "ss": '; have ss && printf true || printf false; printf '}\n'
+    printf '}\n'
+  } >"$output_file"
+}
+
 write_config_summary() {
   local output_file="$1"
   {
@@ -206,7 +295,9 @@ modified=%y' "$STATE_PATH" 2>/dev/null || true
       return
     fi
     printf 'readable=yes\n'
-    printf 'peer_lines=%s\n' "$(grep -c '^peer=' "$STATE_PATH" 2>/dev/null || printf '0')"
+    local peer_lines
+    peer_lines="$(grep -c '^peer=' "$STATE_PATH" 2>/dev/null || true)"
+    printf 'peer_lines=%s\n' "${peer_lines:-0}"
     printf '\n[redacted state]\n'
     redact_stream <"$STATE_PATH"
   } >"$output_file"
@@ -227,6 +318,7 @@ EOF
 }
 
 write_manifest
+write_json_summary "$BUNDLE_DIR/summary.json"
 write_config_summary "$BUNDLE_DIR/config-summary.txt"
 write_state_summary "$BUNDLE_DIR/app-state.txt"
 
