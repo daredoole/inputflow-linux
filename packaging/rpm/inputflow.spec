@@ -36,7 +36,7 @@ retain the mwb-client naming for compatibility.
 %autosetup -n %{name}-%{version}
 
 %build
-%cmake -DMWB_BUILD_TRAY=ON
+%cmake -DMWB_BUILD_TRAY=ON %{?mwb_cmake_extra_args}
 %cmake_build
 
 %install
@@ -51,6 +51,9 @@ install -Dpm0644 packaging/usr/lib/udev/rules.d/70-mwb-client-uinput.rules %{bui
 install -Dpm0644 packaging/usr/lib/systemd/user/mwb-client.service %{buildroot}%{_userunitdir}/mwb-client.service
 install -Dpm0644 packaging/usr/share/applications/inputflow.desktop %{buildroot}%{_datadir}/applications/inputflow.desktop
 install -Dpm0644 assets/icons/inputflow-desktop.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/inputflow.svg
+
+%check
+ctest --test-dir %{_vpath_builddir} --output-on-failure
 
 %pre
 %sysusers_create %{_sysusersdir}/mwb-client.conf
