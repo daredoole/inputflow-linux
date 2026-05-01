@@ -104,6 +104,8 @@ grep -Eq 'install -Dpm0755 mwb-desktop-ui\.sh .+%\{_libexecdir\}/inputflow/mwb-d
 grep -Eq 'install -Dpm0755 scripts/inputflow-diagnostics-bundle\.sh .+%\{_libexecdir\}/inputflow/scripts/inputflow-diagnostics-bundle\.sh' "$spec_file" || fail "spec must install the diagnostics bundle executable"
 grep -Eq 'install -Dpm0644 packaging/usr/share/applications/inputflow\.desktop .+%\{_datadir\}/applications/inputflow\.desktop' "$spec_file" || fail "spec must install the desktop entry"
 grep -Eq 'install -Dpm0644 assets/icons/inputflow-desktop\.svg .+%\{_datadir\}/icons/hicolor/scalable/apps/inputflow\.svg' "$spec_file" || fail "spec must install the application icon"
+grep -Eq '^%check$' "$spec_file" || fail "spec must run package build tests in %check"
+grep -Eq 'ctest --test-dir .*\{_vpath_builddir\} --output-on-failure' "$spec_file" || fail "spec %check must run ctest"
 
 if command -v desktop-file-validate >/dev/null 2>&1; then
     run_quiet "desktop-file-validate" desktop-file-validate packaging/usr/share/applications/inputflow.desktop
@@ -142,7 +144,11 @@ if command -v rpmbuild >/dev/null 2>&1; then
             --transform "s#^\\./#${package_name}-${package_version}/#" \
             -czf "$topdir/SOURCES/${package_name}-${package_version}.tar.gz"
 
-        run_quiet "rpmbuild -bb" rpmbuild -bb --define "_topdir $topdir" "$spec_file"
+        rpm_args=(--define "_topdir $topdir")
+        if [[ -n "${MWB_RPM_CMAKE_EXTRA_ARGS:-}" ]]; then
+            rpm_args+=(--define "mwb_cmake_extra_args ${MWB_RPM_CMAKE_EXTRA_ARGS}")
+        fi
+        run_quiet "rpmbuild -bb" rpmbuild -bb "${rpm_args[@]}" "$spec_file"
     fi
 fi
 

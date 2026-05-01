@@ -13,6 +13,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 500M
+
 jobs:
   ubuntu-build:
     name: Ubuntu build and tests
@@ -22,25 +26,38 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-${{ github.job }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ github.job }}-ccache-
+
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
+            ccache \
             cmake \
+            ninja-build \
             libx11-dev \
             libssl-dev \
             pkg-config \
             zlib1g-dev
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build build --parallel
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      - name: Compiler cache stats
+        run: ccache --show-stats
 
   fedora-build:
     name: Fedora build and tests
@@ -55,32 +72,39 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-${{ github.job }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ github.job }}-ccache-
+
       - name: Install dependencies
         run: |
           dnf install -y \
+            ccache \
             cmake \
             gcc-c++ \
             gtk3-devel \
             libayatana-appindicator3-devel \
             libX11-devel \
             make \
+            ninja-build \
             openssl-devel \
             pkgconf-pkg-config \
             rpm-build \
             systemd-rpm-macros \
             zlib-devel
 
-      - name: Validate RPM packaging skeleton
-        run: MWB_VALIDATE_RPM_BUILD=1 scripts/validate-rpm-packaging.sh
+      - name: Validate RPM packaging, build, and tests
+        run: |
+          MWB_VALIDATE_RPM_BUILD=1 \
+          MWB_RPM_CMAKE_EXTRA_ARGS="-G Ninja -DCMAKE_CXX_COMPILER_LAUNCHER=ccache" \
+          scripts/validate-rpm-packaging.sh
 
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
+      - name: Compiler cache stats
+        run: ccache --show-stats
 
   sanitizers:
     name: ASan and UBSan
@@ -90,25 +114,38 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-${{ github.job }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ github.job }}-ccache-
+
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
+            ccache \
             cmake \
+            ninja-build \
             libx11-dev \
             libssl-dev \
             pkg-config \
             zlib1g-dev
 
       - name: Configure
-        run: cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug -DMWB_ENABLE_SANITIZERS=ON
+        run: cmake -S . -B build-sanitize -G Ninja -DCMAKE_BUILD_TYPE=Debug -DMWB_ENABLE_SANITIZERS=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build build-sanitize --parallel
 
       - name: Test
         run: ctest --test-dir build-sanitize --output-on-failure
+
+      - name: Compiler cache stats
+        run: ccache --show-stats
 
   static-checks:
     name: Static checks
