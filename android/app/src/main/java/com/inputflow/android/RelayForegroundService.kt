@@ -113,8 +113,14 @@ class RelayForegroundService : Service() {
             }
 
             try {
-                Socket(host, port).use { socket ->
+                // Resolve the host fresh on every attempt so a hostname follows
+                // the Linux box across IP changes (DHCP/VPN), same self-healing
+                // model as the desktop client. An IP literal resolves to itself.
+                val address = java.net.InetAddress.getByName(host)
+                Log.i(TAG, "relay connecting: $host -> ${address.hostAddress}:$port")
+                java.net.Socket().use { socket ->
                     socket.tcpNoDelay = true
+                    socket.connect(java.net.InetSocketAddress(address, port), 8000)
                     val device = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
                     val streams = RelayProtocol.authenticate(socket, secret, device)
                     output = streams.second

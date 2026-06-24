@@ -67,6 +67,13 @@ Use the printed `inputflow://android-peer?...` URI as QR content, open it on
 Android, or enter the host, port, and secret manually. The relay refuses to
 start with a weak `android_relay_secret` (see Security below).
 
+**Connect by host name, not IP.** `android-pair` emits the Linux box's **host
+name** by default; the app re-resolves it on every reconnect, so it follows the
+Linux machine across IP changes (DHCP/VPN) — the same self-healing model as the
+desktop client. If the phone can't resolve the bare name on your network, use
+`<hostname>.local` (mDNS/Avahi), a name your DNS resolves, or
+`android-pair --ip` to bake a fixed address.
+
 ## Security
 
 The relay can drive **system-level input injection** on the phone when a Shizuku

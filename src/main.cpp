@@ -67,7 +67,7 @@ void PrintGeneralUsage(std::ostream& out, const char* argv0) {
         << " [--latency-report]\n";
     out << "       " << binary << " discover [--state PATH] [--port PORT] [--timeout-ms MS] [--max-hosts N]\n";
     out << "       " << binary << " doctor [--config PATH] [--state PATH]\n";
-    out << "       " << binary << " android-pair [--config PATH] [--generate]\n";
+    out << "       " << binary << " android-pair [--config PATH] [--generate] [--ip]\n";
     out << "       " << binary << " topology explain [PATH] [--config PATH]\n";
     out << "       " << binary << " init-config [--config PATH] [--force] [--host IP] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME] [--port PORT] [--connection-mode powertoys|inputflow|hybrid]\n";
     out << "       " << binary << " export-windows-pair [--config PATH] [--output PATH] [--force] [--dry-run] [--check] [--linux-ip IP] [--position auto|top-left|top-right|bottom-left|bottom-right] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME]\n";
@@ -2737,6 +2737,7 @@ std::string GenerateRelaySecret() {
 int HandleAndroidPairCommand(const std::vector<std::string>& args) {
     std::filesystem::path configPath = mwb::DefaultConfigPath();
     bool generate = false;
+    bool forceIp = false;
 
     for (std::size_t index = 0; index < args.size(); ++index) {
         const std::string& arg = args[index];
@@ -2748,6 +2749,8 @@ int HandleAndroidPairCommand(const std::vector<std::string>& args) {
             configPath = args[++index];
         } else if (arg == "--generate") {
             generate = true;
+        } else if (arg == "--ip") {
+            forceIp = true;
         } else {
             std::cerr << "ERR: Unknown android-pair option: " << arg << std::endl;
             return 1;
@@ -2794,7 +2797,24 @@ int HandleAndroidPairCommand(const std::vector<std::string>& args) {
         return 1;
     }
 
-    const std::string host = DetectOutboundLocalIpv4(config.host, config.port).value_or("<linux-ip>");
+    // Default to the host NAME so the Android app re-resolves it on every
+    // reconnect and follows the Linux box across IP changes (same self-healing
+    // model as the desktop client). Use --ip to bake a literal address instead.
+    std::string host;
+    bool hostIsName = false;
+    if (!forceIp) {
+        char hostname[256];
+        hostname[0] = '\0';
+        if (gethostname(hostname, sizeof(hostname)) == 0 && hostname[0] != '\0') {
+            hostname[sizeof(hostname) - 1] = '\0';
+            host = hostname;
+            hostIsName = true;
+        }
+    }
+    if (host.empty()) {
+        host = DetectOutboundLocalIpv4(config.host, config.port).value_or("<linux-ip>");
+    }
+
     const std::string uri =
         "inputflow://android-peer?host=" + PercentEncode(host) +
         "&port=" + std::to_string(config.androidRelayPort) +
@@ -2803,6 +2823,12 @@ int HandleAndroidPairCommand(const std::vector<std::string>& args) {
 
     std::cout << "Android pairing URI:" << std::endl;
     std::cout << uri << std::endl;
+    if (hostIsName) {
+        std::cout << "Paired by host name \"" << host
+                  << "\" so the phone follows IP changes. If the phone cannot resolve it, "
+                     "try \"" << host << ".local\", set a name your network resolves, or re-run with --ip."
+                  << std::endl;
+    }
     std::cout << "Use this string as the QR payload or enter the fields manually in the Android app." << std::endl;
     return 0;
 }
