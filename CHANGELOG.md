@@ -4,7 +4,9 @@ All notable changes to InputFlow are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses date-based
 beta releases until a stable 1.0.
 
-## [Unreleased]
+## [0.2.0] - 2026-06-24
+
+First consolidated public-beta release.
 
 ### Added
 - **Self-healing reconnect.** The client now follows a peer that changes its IP
