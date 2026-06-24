@@ -104,6 +104,14 @@ std::int64_t NowEpochSeconds() {
         .count();
 }
 
+std::string NormalizePeerName(std::string value) {
+    value = Trim(std::move(value));
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
 } // namespace
 
 std::filesystem::path DefaultStatePath() {
@@ -257,6 +265,27 @@ void UpsertPeerState(AppState& state, const PeerState& peer) {
     existing->lastConnectedEpochSeconds = std::max(existing->lastConnectedEpochSeconds, peer.lastConnectedEpochSeconds);
 }
 
+std::size_t RemoveStalePeerAddressesForName(
+    AppState& state,
+    const std::string& name,
+    const std::string& currentHost,
+    int port) {
+    const std::string normalizedName = NormalizePeerName(name);
+    if (normalizedName.empty() || currentHost.empty()) {
+        return 0;
+    }
+
+    const auto originalSize = state.peers.size();
+    state.peers.erase(
+        std::remove_if(state.peers.begin(), state.peers.end(), [&](const PeerState& peer) {
+            return peer.port == port &&
+                   peer.host != currentHost &&
+                   NormalizePeerName(peer.name) == normalizedName;
+        }),
+        state.peers.end());
+    return originalSize - state.peers.size();
+}
+
 void ClearConnectedPeers(AppState& state) {
     for (auto& peer : state.peers) {
         peer.connectedNow = false;
@@ -286,6 +315,7 @@ void MarkSessionEstablished(
     }
 
     ClearConnectedPeers(state);
+    RemoveStalePeerAddressesForName(state, remoteName, host, port);
 
     PeerState peer;
     peer.host = host;

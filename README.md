@@ -68,10 +68,12 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 - **Absolute Cursor Movement:** Precise pointer control across screens.
 - **Keyboard Sync:** Full keyboard sharing with media key support.
-- **Rich Clipboard:** Text, HTML, and **Image** synchronization.
+- **Rich Clipboard:** Text, HTML, and **Image** synchronization (plain text stays plain).
 - **Systemd Integration:** Runs as a lightweight user service.
-- **Tray Tool:** Quick access to settings and connection status.
-- **Auto-Reconnect:** Smart backoff logic when Windows goes offline.
+- **Tray + Dashboard:** Connection status, live peer list, LAN peer discovery, and settings that apply on save.
+- **Self-Healing Reconnect:** Follows a peer across IP changes (DHCP/VPN/resume) without a restart — configure peers by **name**.
+- **Lock on Disconnect:** Optionally lock the Linux session when the controlling peer drops.
+- **Android Peer:** Control an Android device as a screen, with no-root (Accessibility/Shizuku) or root native-grade input injection. See [docs/android.md](docs/android.md).
 
 ---
 
@@ -84,6 +86,11 @@ InputFlow is usable today but is still stabilizing. Expect rough edges around re
 - Full Clipboard sync (Text/HTML/Images).
 - `systemd` service management.
 - Windows pairing-helper for easy setup.
+- Self-healing reconnect across peer IP changes.
+- Android peer relay (no-root and, optionally, Shizuku/root native injection).
+
+See the [CHANGELOG](CHANGELOG.md) for what's new and [docs/](docs/) for the full
+guides (compatibility, topology, Android, beta workflow, MWB-parity roadmap).
 
 ---
 

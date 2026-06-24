@@ -1,9 +1,13 @@
 #include "GuiMainWindow.h"
 #include "AppConfig.h"
+#include "AppState.h"
+#include "Discovery.h"
 #include "MonitorLayoutWidget.h"
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <string>
 
 namespace mwb {
@@ -49,6 +53,50 @@ void RunServiceAction(const std::string& action) {
 void OnStartService(GtkButton*, gpointer)   { RunServiceAction("start");   }
 void OnStopService(GtkButton*, gpointer)    { RunServiceAction("stop");    }
 void OnRestartService(GtkButton*, gpointer) { RunServiceAction("restart"); }
+
+bool IsServiceActive() {
+    if (access(kSystemctlPath, X_OK) != 0) {
+        return false;
+    }
+    std::string cmd = std::string(kSystemctlPath) + " --user is-active --quiet " + kServiceName;
+    return std::system(cmd.c_str()) == 0;
+}
+
+// After saving settings, a running daemon keeps its old config until restarted.
+// Offer to apply immediately so users are never silently editing a no-op.
+void PromptApplyRestart(GuiMainWindow* win) {
+    if (!IsServiceActive()) {
+        return;
+    }
+    GtkWindow* parent = (win && win->window) ? GTK_WINDOW(win->window) : nullptr;
+    GtkWidget* dlg = gtk_message_dialog_new(
+        parent,
+        GTK_DIALOG_MODAL,
+        GTK_MESSAGE_QUESTION,
+        GTK_BUTTONS_NONE,
+        "Settings saved. Restart the InputFlow service now to apply them?");
+    gtk_dialog_add_button(GTK_DIALOG(dlg), "Later", GTK_RESPONSE_CANCEL);
+    GtkWidget* restartBtn = gtk_dialog_add_button(GTK_DIALOG(dlg), "Restart now", GTK_RESPONSE_ACCEPT);
+    gtk_style_context_add_class(gtk_widget_get_style_context(restartBtn), "suggested-action");
+    const gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+    if (resp == GTK_RESPONSE_ACCEPT) {
+        RunServiceAction("restart");
+    }
+}
+
+void ShowSaveError(GuiMainWindow* win, const std::string& err) {
+    GtkWindow* parent = (win && win->window) ? GTK_WINDOW(win->window) : nullptr;
+    GtkWidget* dlg = gtk_message_dialog_new(
+        parent,
+        GTK_DIALOG_MODAL,
+        GTK_MESSAGE_ERROR,
+        GTK_BUTTONS_CLOSE,
+        "Failed to save settings: %s",
+        err.empty() ? "unknown error" : err.c_str());
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+}
 
 ConnectionMode ActiveConnectionMode(GuiMainWindow* win) {
     if (!win->connectionModeCombo) {
@@ -101,18 +149,98 @@ void OnConnectionModeChanged(GtkComboBox*, gpointer data) {
     ApplyModeSensitivity(static_cast<GuiMainWindow*>(data));
 }
 
+// ---- discovered-peer picker ------------------------------------------------
+
+void OnPickDiscoveredPeer(GtkButton*, gpointer data) {
+    auto* win = static_cast<GuiMainWindow*>(data);
+    const int port = win->portSpin
+                         ? static_cast<int>(gtk_spin_button_get_value(GTK_SPIN_BUTTON(win->portSpin)))
+                         : 15101;
+
+    DiscoveryOptions opts;
+    opts.port = static_cast<uint16_t>(port);
+    opts.connectTimeoutMs = 300;
+    opts.maxHostsPerSubnet = 256;
+    const auto candidates = DiscoverLanCandidates(opts);
+
+    GtkWindow* parent = (win && win->window) ? GTK_WINDOW(win->window) : nullptr;
+    GtkWidget* dlg = gtk_dialog_new_with_buttons(
+        "Discovered peers", parent, GTK_DIALOG_MODAL,
+        "Cancel", GTK_RESPONSE_CANCEL, nullptr);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 380, 300);
+    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+
+    GtkWidget* hint = gtk_label_new("Selecting a named peer is recommended — it lets InputFlow\nfollow the peer automatically if its IP changes.");
+    gtk_widget_set_halign(hint, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(content), hint, FALSE, FALSE, 6);
+
+    GtkWidget* listbox = gtk_list_box_new();
+    int openCount = 0;
+    for (const auto& candidate : candidates) {
+        if (candidate.status != DiscoveryStatus::Open) {
+            continue;
+        }
+        ++openCount;
+        const std::string display = candidate.hostName.empty()
+                                        ? candidate.ipAddress
+                                        : (candidate.hostName + "   (" + candidate.ipAddress + ")");
+        // Prefer the resolved name so the saved host survives IP changes.
+        const std::string chosen = candidate.hostName.empty() ? candidate.ipAddress : candidate.hostName;
+
+        GtkWidget* row = gtk_list_box_row_new();
+        GtkWidget* lbl = gtk_label_new(display.c_str());
+        gtk_widget_set_halign(lbl, GTK_ALIGN_START);
+        gtk_container_add(GTK_CONTAINER(row), lbl);
+        g_object_set_data_full(G_OBJECT(row), "peer-host",
+                               new std::string(chosen),
+                               [](gpointer p) { delete static_cast<std::string*>(p); });
+        gtk_list_box_insert(GTK_LIST_BOX(listbox), row, -1);
+    }
+    if (openCount == 0) {
+        GtkWidget* empty = gtk_label_new("No peers found on the local network.");
+        gtk_widget_set_halign(empty, GTK_ALIGN_START);
+        gtk_list_box_insert(GTK_LIST_BOX(listbox), empty, -1);
+    }
+
+    g_signal_connect(listbox, "row-activated",
+        G_CALLBACK(+[](GtkListBox*, GtkListBoxRow* row, gpointer d) {
+            auto* w = static_cast<GuiMainWindow*>(d);
+            auto* val = static_cast<std::string*>(g_object_get_data(G_OBJECT(row), "peer-host"));
+            if (val && w->hostEntry) {
+                gtk_entry_set_text(GTK_ENTRY(w->hostEntry), val->c_str());
+            }
+            GtkWidget* top = gtk_widget_get_toplevel(GTK_WIDGET(row));
+            if (GTK_IS_DIALOG(top)) {
+                gtk_dialog_response(GTK_DIALOG(top), GTK_RESPONSE_OK);
+            }
+        }), win);
+
+    GtkWidget* scroll = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_container_add(GTK_CONTAINER(scroll), listbox);
+    gtk_box_pack_start(GTK_BOX(content), scroll, TRUE, TRUE, 0);
+
+    gtk_widget_show_all(dlg);
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+}
+
 // ---- settings save ---------------------------------------------------------
 
 void OnSaveSettings(GtkButton*, gpointer data) {
     auto* win = static_cast<GuiMainWindow*>(data);
 
     AppConfig cfg;
+    std::string err;
+    (void)LoadAppConfig(win->configPath, cfg, &err);
     cfg.connectionMode = ActiveConnectionMode(win);
     cfg.host         = gtk_entry_get_text(GTK_ENTRY(win->hostEntry));
     cfg.port         = static_cast<int>(gtk_spin_button_get_value(GTK_SPIN_BUTTON(win->portSpin)));
     cfg.machineName  = gtk_entry_get_text(GTK_ENTRY(win->nameEntry));
     cfg.key          = gtk_entry_get_text(GTK_ENTRY(win->keyEntry));
     cfg.autoConnectEnabled = gtk_switch_get_active(GTK_SWITCH(win->autoConnectSwitch));
+    cfg.lockOnDisconnect   = gtk_switch_get_active(GTK_SWITCH(win->lockOnDisconnectSwitch));
     cfg.clipboardEnabled   = gtk_switch_get_active(GTK_SWITCH(win->clipboardSwitch));
     cfg.mprisMediaKeysEnabled = gtk_switch_get_active(GTK_SWITCH(win->mprisSwitch));
     cfg.mprisPlayer    = gtk_entry_get_text(GTK_ENTRY(win->mprisPlayerEntry));
@@ -129,8 +257,11 @@ void OnSaveSettings(GtkButton*, gpointer data) {
     const gchar* backendId = gtk_combo_box_get_active_id(GTK_COMBO_BOX(win->androidBackendCombo));
     if (backendId) cfg.androidCaptureBackend = backendId;
 
-    std::string err;
-    WriteAppConfig(win->configPath, cfg, &err);
+    const bool saved = WriteAppConfig(win->configPath, cfg, &err);
+    if (!saved) {
+        ShowSaveError(win, err);
+        return;
+    }
 
     if (win->onSettingsSaved) win->onSettingsSaved(cfg);
 
@@ -138,6 +269,9 @@ void OnSaveSettings(GtkButton*, gpointer data) {
     if (cfg.topologyRuntimeEnabled && win->layoutStack) {
         gtk_stack_set_visible_child_name(GTK_STACK(win->layoutStack), "canvas");
     }
+
+    // Apply now rather than silently waiting for a manual restart.
+    PromptApplyRestart(win);
 }
 
 // ---- topology enable button ------------------------------------------------
@@ -180,6 +314,81 @@ void GridAttach(GtkWidget* grid, GtkWidget* label, GtkWidget* widget, int row) {
 
 // ---- build tabs ------------------------------------------------------------
 
+std::string FormatRelativeAge(std::int64_t epochSeconds) {
+    if (epochSeconds <= 0) {
+        return "never";
+    }
+    const std::int64_t now = static_cast<std::int64_t>(std::time(nullptr));
+    std::int64_t delta = now - epochSeconds;
+    if (delta < 0) {
+        delta = 0;
+    }
+    if (delta < 60) {
+        return std::to_string(delta) + "s ago";
+    }
+    if (delta < 3600) {
+        return std::to_string(delta / 60) + "m ago";
+    }
+    if (delta < 86400) {
+        return std::to_string(delta / 3600) + "h ago";
+    }
+    return std::to_string(delta / 86400) + "d ago";
+}
+
+void RefreshPeersList(GuiMainWindow* win) {
+    if (!win || !win->peersList) {
+        return;
+    }
+    // Clear existing rows.
+    GList* children = gtk_container_get_children(GTK_CONTAINER(win->peersList));
+    for (GList* it = children; it != nullptr; it = it->next) {
+        gtk_widget_destroy(GTK_WIDGET(it->data));
+    }
+    g_list_free(children);
+
+    AppState state;
+    std::string err;
+    const auto statePath = DefaultStatePath();
+    auto addRow = [&](const std::string& text) {
+        GtkWidget* row = gtk_list_box_row_new();
+        GtkWidget* lbl = gtk_label_new(text.c_str());
+        gtk_widget_set_halign(lbl, GTK_ALIGN_START);
+        gtk_container_add(GTK_CONTAINER(row), lbl);
+        gtk_list_box_insert(GTK_LIST_BOX(win->peersList), row, -1);
+    };
+
+    if (!std::filesystem::exists(statePath) || !LoadAppState(statePath, state, err)) {
+        addRow("No known peers yet.");
+        gtk_widget_show_all(win->peersList);
+        return;
+    }
+    if (state.peers.empty()) {
+        addRow("No known peers yet.");
+        gtk_widget_show_all(win->peersList);
+        return;
+    }
+
+    for (const auto& peer : state.peers) {
+        const char* dot = peer.connectedNow ? "🟢" : (peer.approved ? "⚪" : "🔴");
+        const std::string name = peer.name.empty() ? "(unnamed)" : peer.name;
+        std::string line = std::string(dot) + "  " + name + "   " + peer.host + ":" + std::to_string(peer.port);
+        if (peer.connectedNow) {
+            line += "   — connected";
+        } else {
+            line += "   — seen " + FormatRelativeAge(peer.lastSeenEpochSeconds);
+        }
+        if (!peer.approved) {
+            line += "  (unapproved)";
+        }
+        addRow(line);
+    }
+    gtk_widget_show_all(win->peersList);
+}
+
+void OnRefreshPeers(GtkButton*, gpointer data) {
+    RefreshPeersList(static_cast<GuiMainWindow*>(data));
+}
+
 GtkWidget* BuildStatusTab(GuiMainWindow* win) {
     GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_container_set_border_width(GTK_CONTAINER(box), 16);
@@ -214,6 +423,26 @@ GtkWidget* BuildStatusTab(GuiMainWindow* win) {
     gtk_container_add(GTK_CONTAINER(btnRow), btnStop);
     gtk_container_add(GTK_CONTAINER(btnRow), btnRestart);
     gtk_box_pack_start(GTK_BOX(box), btnRow, FALSE, FALSE, 4);
+
+    // Peers (live status from saved state: connected now / last seen)
+    GtkWidget* peersHeaderRow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget* peersHeader = MakeLabel("Peers:");
+    gtk_box_pack_start(GTK_BOX(peersHeaderRow), peersHeader, FALSE, FALSE, 0);
+    GtkWidget* refreshPeersBtn = gtk_button_new_with_label("Refresh");
+    gtk_widget_set_halign(refreshPeersBtn, GTK_ALIGN_END);
+    g_signal_connect(refreshPeersBtn, "clicked", G_CALLBACK(OnRefreshPeers), win);
+    gtk_box_pack_end(GTK_BOX(peersHeaderRow), refreshPeersBtn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), peersHeaderRow, FALSE, FALSE, 0);
+
+    win->peersList = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(win->peersList), GTK_SELECTION_NONE);
+    GtkWidget* peersScroll = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(peersScroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(peersScroll, -1, 110);
+    gtk_container_add(GTK_CONTAINER(peersScroll), win->peersList);
+    gtk_box_pack_start(GTK_BOX(box), peersScroll, FALSE, FALSE, 0);
+    RefreshPeersList(win);
 
     // Log
     gtk_box_pack_start(GTK_BOX(box), MakeLabel("Recent events:"), FALSE, FALSE, 0);
@@ -259,8 +488,14 @@ GtkWidget* BuildSettingsTab(GuiMainWindow* win, const AppConfig& cfg) {
 
     win->hostEntry = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(win->hostEntry), cfg.host.c_str());
-    gtk_entry_set_placeholder_text(GTK_ENTRY(win->hostEntry), "hostname or IP");
-    GridAttach(grid, MakeLabel("Host"), win->hostEntry, row++);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(win->hostEntry), "peer name (recommended) or IP");
+    GtkWidget* hostRow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_pack_start(GTK_BOX(hostRow), win->hostEntry, TRUE, TRUE, 0);
+    GtkWidget* discoverBtn = gtk_button_new_with_label("Discover…");
+    gtk_widget_set_tooltip_text(discoverBtn, "Scan the local network and pick a peer by name");
+    g_signal_connect(discoverBtn, "clicked", G_CALLBACK(OnPickDiscoveredPeer), win);
+    gtk_box_pack_start(GTK_BOX(hostRow), discoverBtn, FALSE, FALSE, 0);
+    GridAttach(grid, MakeLabel("Host"), hostRow, row++);
 
     win->portSpin = gtk_spin_button_new_with_range(1, 65535, 1);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(win->portSpin), cfg.port);
@@ -290,6 +525,12 @@ GtkWidget* BuildSettingsTab(GuiMainWindow* win, const AppConfig& cfg) {
     win->autoConnectSwitch = gtk_switch_new();
     gtk_switch_set_active(GTK_SWITCH(win->autoConnectSwitch), cfg.autoConnectEnabled);
     GridAttach(grid2, MakeLabel("Auto-connect"), win->autoConnectSwitch, r2++);
+
+    win->lockOnDisconnectSwitch = gtk_switch_new();
+    gtk_switch_set_active(GTK_SWITCH(win->lockOnDisconnectSwitch), cfg.lockOnDisconnect);
+    gtk_widget_set_tooltip_text(win->lockOnDisconnectSwitch,
+                                "Lock this Linux session when the controlling peer disconnects");
+    GridAttach(grid2, MakeLabel("Lock on disconnect"), win->lockOnDisconnectSwitch, r2++);
 
     win->clipboardSwitch = gtk_switch_new();
     gtk_switch_set_active(GTK_SWITCH(win->clipboardSwitch), cfg.clipboardEnabled);
@@ -366,7 +607,7 @@ GtkWidget* BuildMonitorTab(GuiMainWindow* win, const AppConfig& cfg) {
 
     // Canvas page
     GtkWidget* canvasBox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    MonitorLayoutWidget* mlw = CreateMonitorLayoutWidget(cfg);
+    MonitorLayoutWidget* mlw = CreateMonitorLayoutWidget(cfg, win->configPath);
     win->layoutCanvas = mlw->widget;
     gtk_widget_set_size_request(win->layoutCanvas, -1, 320);
     gtk_box_pack_start(GTK_BOX(canvasBox), win->layoutCanvas, TRUE, TRUE, 0);
@@ -495,7 +736,7 @@ GuiMainWindow* CreateMainWindow(const AppConfig& config,
     ApplyModeSensitivity(win);
 
     gtk_widget_show_all(win->window);
-    gtk_widget_hide(win->window);  // start hidden; shown from tray
+    gtk_notebook_set_current_page(GTK_NOTEBOOK(win->notebook), 2);
     return win;
 }
 

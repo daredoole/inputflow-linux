@@ -38,6 +38,7 @@ class InputFlowAccessibilityService : AccessibilityService() {
     private var pendingScrollDx = 0.0
     private var pendingScrollDy = 0.0
     private var scrollFlushScheduled = false
+    private var loggedMouseFrames = 0
     @Suppress("DEPRECATION")
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -71,6 +72,10 @@ class InputFlowAccessibilityService : AccessibilityService() {
         val x = frame.optInt("x")
         val y = frame.optInt("y")
         val mouseData = frame.optInt("mouseData")
+        if (loggedMouseFrames < 5) {
+            Log.i(TAG, "mouse frame wParam=$wParam x=$x y=$y overlay=${cursorView != null}")
+            loggedMouseFrames += 1
+        }
         when (wParam) {
             WM_MOUSEMOVE -> moveToNormalized(x, y)
             WM_LBUTTONUP -> tap(pointerX, pointerY)
@@ -82,6 +87,7 @@ class InputFlowAccessibilityService : AccessibilityService() {
 
     fun setRemoteControlActive(active: Boolean) {
         mainHandler.post {
+            Log.i(TAG, "cursor overlay active=$active")
             if (active) {
                 showCursorOverlay()
             } else {
@@ -591,10 +597,22 @@ class InputFlowAccessibilityService : AccessibilityService() {
             gravity = Gravity.TOP or Gravity.START
         }
         windowManager = getSystemService(WindowManager::class.java)
-        cursorView = view
-        cursorParams = params
-        windowManager?.addView(view, params)
-        updateCursorOverlay()
+        val manager = windowManager
+        if (manager == null) {
+            Log.w(TAG, "cursor overlay failed: WindowManager unavailable")
+            return
+        }
+        try {
+            manager.addView(view, params)
+            cursorView = view
+            cursorParams = params
+            Log.i(TAG, "cursor overlay shown size=${params.width}x${params.height}")
+            updateCursorOverlay()
+        } catch (e: Exception) {
+            cursorView = null
+            cursorParams = null
+            Log.e(TAG, "cursor overlay failed", e)
+        }
     }
 
     private fun updateCursorOverlay() {
@@ -602,7 +620,11 @@ class InputFlowAccessibilityService : AccessibilityService() {
         val params = cursorParams ?: return
         params.x = (pointerX - params.width / 2f).toInt()
         params.y = (pointerY - params.height / 2f).toInt()
-        windowManager?.updateViewLayout(view, params)
+        try {
+            windowManager?.updateViewLayout(view, params)
+        } catch (e: Exception) {
+            Log.e(TAG, "cursor overlay update failed", e)
+        }
     }
 
     private fun hideCursorOverlay() {

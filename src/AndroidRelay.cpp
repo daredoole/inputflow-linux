@@ -1,5 +1,7 @@
 #include "AndroidRelay.h"
 
+#include "AppConfig.h"
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -174,6 +176,16 @@ bool AndroidRelayServer::Start() {
     }
     if (m_options.secret.empty()) {
         std::cerr << "WARN: Android relay enabled but android_relay_secret is empty; relay disabled." << std::endl;
+        return true;
+    }
+    // The relay can drive native (Shizuku/root) input injection on the phone, so
+    // a weak shared secret is a privilege-escalation risk. Fail closed.
+    if (!IsStrongRelaySecret(m_options.secret)) {
+        std::cerr << "ERROR: android_relay_secret is too weak (need >= "
+                  << kMinRelaySecretLength
+                  << " chars with enough variety); relay disabled. "
+                     "Generate a strong one with: mwb_client android-pair --generate"
+                  << std::endl;
         return true;
     }
     if (m_options.port <= 0 || m_options.port > 65535) {

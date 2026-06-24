@@ -2,8 +2,10 @@
 
 #include <string>
 #include <string_view>
+#include <optional>
 #include <vector>
 
+#include "AppConfig.h"
 #include "AppState.h"
 #include "Discovery.h"
 
@@ -27,5 +29,7 @@ std::vector<std::string> CollectRecoveryDiscoveredHosts(const AppState& state,
                                                        std::string_view configuredHost,
                                                        int port,
                                                        const std::vector<DiscoveryCandidate>& candidates);
+std::optional<std::string> RecoverConfiguredHostFromKnownPeers(const AppConfig& config,
+                                                               const AppState& state);
 
 } // namespace mwb

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -27,6 +28,11 @@ bool LoadAppState(const std::filesystem::path& path, AppState& state, std::strin
 bool SaveAppState(const std::filesystem::path& path, const AppState& state, std::string& errorMessage);
 uint32_t EnsureLocalMachineId(AppState& state);
 void UpsertPeerState(AppState& state, const PeerState& peer);
+std::size_t RemoveStalePeerAddressesForName(
+    AppState& state,
+    const std::string& name,
+    const std::string& currentHost,
+    int port);
 void ClearConnectedPeers(AppState& state);
 void SetPeerConnectedState(AppState& state, const std::string& host, int port, bool connected);
 void MarkSessionEstablished(

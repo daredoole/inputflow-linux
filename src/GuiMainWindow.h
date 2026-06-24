@@ -22,6 +22,7 @@ struct GuiMainWindow {
     GtkWidget* detailLabel{nullptr};
     GtkWidget* logView{nullptr};
     GtkTextBuffer* logBuf{nullptr};
+    GtkWidget* peersList{nullptr};    // GtkListBox of known/live peers
 
     // Settings tab — connection
     GtkWidget* connectionModeCombo{nullptr};
@@ -32,6 +33,7 @@ struct GuiMainWindow {
 
     // Settings tab — behavior
     GtkWidget* autoConnectSwitch{nullptr};
+    GtkWidget* lockOnDisconnectSwitch{nullptr};
     GtkWidget* clipboardSwitch{nullptr};
     GtkWidget* mprisSwitch{nullptr};
     GtkWidget* mprisPlayerEntry{nullptr};

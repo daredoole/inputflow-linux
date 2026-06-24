@@ -27,27 +27,66 @@ The relay is disabled by default. If `android_relay_secret` is empty, the relay 
 
 ## Android app
 
-The Android project lives in `android/`.
-
-The app is intentionally no-root:
-
-- `RelayForegroundService` connects to the Linux relay over LAN.
-- `InputFlowAccessibilityService` shows a cursor overlay, dispatches click/scroll gestures, and performs basic focused-node text actions.
-- `InputFlowImeService` is included as an optional keyboard surface for later richer text handling.
-
-Generate a pairing payload with:
+The Android project lives in `android/`. Targets Android 15+ (`targetSdk` /
+`compileSdk` 36, `minSdk` 26). Build with the bundled wrapper and JDK 21:
 
 ```bash
-./build/mwb_client android-pair --config ~/.config/mwb-client/config.ini
+cd android
+JAVA_HOME=/path/to/jdk-21 ./gradlew :app:assembleDebug
 ```
 
-Use the printed `inputflow://android-peer?...` URI as QR content, open it on Android, or enter the same host, port, and secret manually in the app.
+The relay foreground service uses the `connectedDevice` type so Android 15's
+`dataSync` runtime cap does not kill long sessions.
+
+### Input injection backends (Settings → Input method)
+
+Choose how input is delivered to the phone:
+
+- **Accessibility** (default, no root): overlay cursor + gesture/focused-node
+  edits. Works everywhere but is gesture-based and cannot type into secure
+  fields.
+- **Shizuku** (no root): shell-UID `injectInputEvent` — a real system cursor and
+  key events, including secure fields. Requires the [Shizuku](https://shizuku.rikka.app/)
+  app running; tap **Grant Shizuku** in Settings.
+- **Root** (libsu): same native injection as root. Tap **Grant Root**.
+- **Auto**: prefers Root > Shizuku > Accessibility by availability.
+
+Native backends inject real `MotionEvent`/`KeyEvent` at system level, so they
+behave like a hardware mouse/keyboard rather than synthesized accessibility
+gestures.
+
+### Pairing
+
+Generate (and mint a strong secret if needed) with:
+
+```bash
+./build/mwb_client android-pair --generate --config ~/.config/mwb-client/config.ini
+```
+
+Use the printed `inputflow://android-peer?...` URI as QR content, open it on
+Android, or enter the host, port, and secret manually. The relay refuses to
+start with a weak `android_relay_secret` (see Security below).
+
+## Security
+
+The relay can drive **system-level input injection** on the phone when a Shizuku
+or root backend is selected — that includes secure fields. The shared
+`android_relay_secret` is therefore the gate to full device control over the LAN.
+
+- The relay **refuses to start** and `android-pair` **refuses to emit a URI**
+  when the secret is weak (`< 16` characters or too little variety).
+- Generate a strong (256-bit) secret with `android-pair --generate`.
+- Keep the relay on a trusted LAN/VPN; never expose its port to the internet.
+- Treat the pairing URI/QR like a password — it contains the secret.
 
 ## Current limitations
 
-- Android input injection uses a no-root overlay plus Accessibility gestures/focused-node text edits, so it is less complete than a real HID or privileged input path.
+- Accessibility backend is gesture-based (less precise, no secure-field input).
+  Use Shizuku or root for native-grade injection.
 - Linux physical keyboard/mouse capture needs the KDE/Wayland `libei`/EIS path for monitor-like behavior. The evdev fallback is intentionally opt-in and diagnostic only.
 - Android can request control release from the app; richer edge-based return behavior is future work.
+- The relay forwards button-up events, so native clicks are synthesized as
+  press+release (taps/clicks work; true drag needs a relay-protocol addition).
 
 ## Controls
 

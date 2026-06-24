@@ -26,6 +26,7 @@ struct AppConfig {
     bool clipboardForcePoll{false};
     int clipboardPollMs{5000};
     bool autoConnectEnabled{true};
+    bool lockOnDisconnect{false};
     int reconnectInitialBackoffMs{1000};
     int reconnectMaxBackoffMs{30000};
     int reconnectIdleRetryMs{30000};
@@ -52,6 +53,12 @@ std::optional<ConnectionMode> ParseConnectionMode(std::string_view value);
 std::string_view ConnectionModeName(ConnectionMode mode);
 bool PowerToysCompatibilityEnabled(ConnectionMode mode);
 bool InputFlowPeersEnabled(ConnectionMode mode);
+
+// Minimum length for the Android relay shared secret. The relay can drive
+// native (Shizuku/root) input injection on the phone, so a weak secret is a
+// real privilege-escalation risk; the relay refuses to start below this bar.
+constexpr std::size_t kMinRelaySecretLength = 16;
+bool IsStrongRelaySecret(std::string_view secret);
 
 std::optional<bool> ParseConfigBool(std::string_view value);
 std::optional<int> ParseConfigInt(std::string_view value);

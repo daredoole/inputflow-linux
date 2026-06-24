@@ -7,16 +7,23 @@
 #include <thread>
 
 #include "Protocol.h"
+#include "TopologyModel.h"
 
 namespace mwb {
 
 struct LibeiInputCaptureBridgeOptions {
     int desktopWidth{0};
     int desktopHeight{0};
+    std::shared_ptr<const TopologyModel> topology;
+    std::string localMachineName;
+    std::string androidPeerName;
     std::function<bool(const MouseData&)> sendMouse;
+    std::function<bool(const MouseData&, const std::string&)> sendMouseToMachine;
     std::function<bool(const KeyboardData&)> sendKeyboard;
+    std::function<bool(const KeyboardData&, const std::string&)> sendKeyboardToMachine;
     std::function<bool(const std::string&, double, double)> sendGesture;
     std::function<bool(bool)> sendControl;
+    std::function<bool(bool, const std::string&)> sendControlForMachine;
 };
 
 class LibeiInputCaptureBridge {

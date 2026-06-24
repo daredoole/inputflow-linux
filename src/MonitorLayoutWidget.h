@@ -21,6 +21,7 @@ struct MonitorLayoutWidget {
     GtkWidget* widget{nullptr};  // GtkDrawingArea
     std::vector<LayoutMachine> machines;
     std::string configPath;
+    std::string topologyPath;
     int dragIndex{-1};
     double dragOffX{0}, dragOffY{0};
 };
@@ -28,7 +29,7 @@ struct MonitorLayoutWidget {
 // Creates a MonitorLayoutWidget populated from cfg.topologyFile (if set).
 // Returns heap-allocated; caller owns it (kept alive by GtkWidget lifetime via
 // g_object_set_data).
-MonitorLayoutWidget* CreateMonitorLayoutWidget(const AppConfig& cfg);
+MonitorLayoutWidget* CreateMonitorLayoutWidget(const AppConfig& cfg, const std::string& configPath);
 
 // Callbacks wired to GTK buttons (signature matches GCallback).
 void MonitorLayoutWidgetApply(GtkButton* btn, gpointer data);

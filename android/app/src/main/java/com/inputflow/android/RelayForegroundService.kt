@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.DataOutputStream
@@ -22,11 +23,14 @@ class RelayForegroundService : Service() {
     private var output: DataOutputStream? = null
     @Volatile
     private var remoteControlActive = false
+    private var deliveredMouseFrames = 0
+    private var droppedMouseFrames = 0
 
     override fun onCreate() {
         super.onCreate()
         instance = this
         createNotificationChannel()
+        InjectorManager.init(this)
     }
 
     override fun onDestroy() {
@@ -35,14 +39,29 @@ class RelayForegroundService : Service() {
         worker?.interrupt()
         output = null
         deactivateRemoteControl()
+        broadcastStatus(STATE_DISCONNECTED, "Stopped")
         super.onDestroy()
+    }
+
+    // Android 10+ requires (and Android 14+ enforces) an explicit foreground
+    // service type. connectedDevice avoids the Android 15 dataSync time-cap.
+    private fun startRelayForeground(text: String) {
+        val notif = notification(text)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notif,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        } else {
+            startForeground(NOTIFICATION_ID, notif)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_RELEASE -> {
                 if (!running.get()) {
-                    startForeground(NOTIFICATION_ID, notification("Release requested"))
+                    startRelayForeground("Release requested")
                     deactivateRemoteControl()
                     stopSelf()
                 } else {
@@ -52,7 +71,7 @@ class RelayForegroundService : Service() {
             }
             ACTION_STOP -> {
                 if (!running.get()) {
-                    startForeground(NOTIFICATION_ID, notification("Stopping"))
+                    startRelayForeground("Stopping")
                 }
                 deactivateRemoteControl()
                 stopSelf()
@@ -74,7 +93,8 @@ class RelayForegroundService : Service() {
 
     private fun startRelay() {
         if (!running.compareAndSet(false, true)) return
-        startForeground(NOTIFICATION_ID, notification("Connecting"))
+        InjectorManager.start(this)
+        startRelayForeground("Connecting")
         broadcastStatus(STATE_CONNECTING, null)
         worker = Thread({ relayLoop() }, "inputflow-relay").also { it.start() }
     }
@@ -86,7 +106,7 @@ class RelayForegroundService : Service() {
             val secret = prefs.getString(KEY_SECRET, "").orEmpty()
             val port = prefs.getInt(KEY_PORT, 15102)
             if (host.isBlank() || secret.isBlank()) {
-                startForeground(NOTIFICATION_ID, notification("Missing pairing settings"))
+                startRelayForeground("Missing pairing settings")
                 broadcastStatus(STATE_DISCONNECTED, "Missing host or secret")
                 sleepQuietly(2000)
                 continue
@@ -98,15 +118,30 @@ class RelayForegroundService : Service() {
                     val device = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
                     val streams = RelayProtocol.authenticate(socket, secret, device)
                     output = streams.second
+                    deliveredMouseFrames = 0
+                    droppedMouseFrames = 0
+                    Log.i(TAG, "relay connected to $host:$port as $device")
                     deactivateRemoteControl()
-                    startForeground(NOTIFICATION_ID, notification("Connected to $host:$port"))
+                    startRelayForeground("Connected to $host:$port")
                     broadcastStatus(STATE_CONNECTED, "$host:$port")
                     while (running.get()) {
                         val frame = RelayProtocol.readFrame(streams.first)
                         when (frame.optString("type")) {
                             "control" -> setRemoteControlActive(frame.optBoolean("active", false))
                             "mouse" -> if (remoteControlActive) {
-                                InputFlowAccessibilityService.instance?.handleMouse(frame)
+                                // Prefer native injection (Shizuku/root); fall back to accessibility.
+                                if (!InjectorManager.handleMouse(frame)) {
+                                    val accessibility = InputFlowAccessibilityService.instance
+                                    if (accessibility != null) {
+                                        deliveredMouseFrames += 1
+                                        accessibility.handleMouse(frame)
+                                    } else {
+                                        if (droppedMouseFrames < 5) {
+                                            Log.w(TAG, "mouse frame dropped: no injector active")
+                                        }
+                                        droppedMouseFrames += 1
+                                    }
+                                }
                             }
                             "keyboard" -> {
                                 val cb = keyCaptureCallback
@@ -114,7 +149,11 @@ class RelayForegroundService : Service() {
                                     cb(frame.optInt("vkCode"), frame.optInt("flags"))
                                 } else if (remoteControlActive) {
                                     val accessibility = InputFlowAccessibilityService.instance
-                                    if (accessibility?.handleMappedKeyboard(frame) != true) {
+                                    if (accessibility?.handleMappedKeyboard(frame) == true) {
+                                        // handled by a user-defined key mapping
+                                    } else if (InjectorManager.handleKeyboard(frame)) {
+                                        // injected natively (Shizuku/root)
+                                    } else {
                                         val laptopTypingEnabled = prefs.getBoolean(KEY_LAPTOP_TYPING_ENABLED, false)
                                         if (!laptopTypingEnabled || InputFlowImeService.instance?.handleKeyboard(frame) != true) {
                                             accessibility?.handleKeyboard(frame)
@@ -130,10 +169,11 @@ class RelayForegroundService : Service() {
                     }
                     deactivateRemoteControl()
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.w(TAG, "relay disconnected; retrying", e)
                 output = null
                 deactivateRemoteControl()
-                startForeground(NOTIFICATION_ID, notification("Disconnected; retrying"))
+                startRelayForeground("Disconnected; retrying")
                 broadcastStatus(STATE_DISCONNECTED, "Retrying…")
                 sleepQuietly(1500)
             }
@@ -155,8 +195,16 @@ class RelayForegroundService : Service() {
     }
 
     private fun setRemoteControlActive(active: Boolean) {
+        val changed = remoteControlActive != active
         remoteControlActive = active
-        InputFlowAccessibilityService.instance?.setRemoteControlActive(active)
+        val accessibility = InputFlowAccessibilityService.instance
+        if (changed) {
+            Log.i(TAG, "remote control active=$active accessibility=${accessibility != null}")
+        }
+        if (active && accessibility == null) {
+            Log.w(TAG, "remote control requested but accessibility service is not active")
+        }
+        accessibility?.setRemoteControlActive(active)
         if (!active) {
             InputFlowImeService.restorePreviousKeyboard()
         }
@@ -167,8 +215,17 @@ class RelayForegroundService : Service() {
     }
 
     private fun broadcastStatus(state: String, detail: String?) {
+        currentState = state
+        currentDetail = detail
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(KEY_STATUS_STATE, state)
+            .putString(KEY_STATUS_DETAIL, detail.orEmpty())
+            .putBoolean(KEY_STATUS_HAS_DETAIL, detail != null)
+            .putLong(KEY_STATUS_UPDATED_MS, System.currentTimeMillis())
+            .apply()
         sendBroadcast(
             Intent(ACTION_STATUS_BROADCAST)
+                .setPackage(packageName)
                 .putExtra(EXTRA_STATE, state)
                 .putExtra(EXTRA_DETAIL, detail)
         )
@@ -199,6 +256,10 @@ class RelayForegroundService : Service() {
         const val KEY_PORT = "port"
         const val KEY_SECRET = "secret"
         const val KEY_LAPTOP_TYPING_ENABLED = "laptop_typing_enabled"
+        const val KEY_STATUS_STATE = "status_state"
+        const val KEY_STATUS_DETAIL = "status_detail"
+        const val KEY_STATUS_HAS_DETAIL = "status_has_detail"
+        const val KEY_STATUS_UPDATED_MS = "status_updated_ms"
         const val ACTION_RELEASE = "com.inputflow.android.RELEASE"
         const val ACTION_STOP = "com.inputflow.android.STOP"
         const val ACTION_STATUS_BROADCAST = "com.inputflow.android.STATUS"
@@ -211,8 +272,11 @@ class RelayForegroundService : Service() {
         const val STATE_DISCONNECTED = "disconnected"
         private const val CHANNEL_ID = "inputflow-relay"
         private const val NOTIFICATION_ID = 10
+        private const val TAG = "InputFlowRelay"
 
         @Volatile var instance: RelayForegroundService? = null
+        @Volatile var currentState: String = STATE_DISCONNECTED
+        @Volatile var currentDetail: String? = null
         @Volatile var cachedDevicesJson: String? = null
         @Volatile var keyCaptureCallback: ((Int, Int) -> Unit)? = null
     }

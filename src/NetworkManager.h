@@ -35,15 +35,21 @@ public:
 
     void SetAutoConnectEnabled(bool enabled) { m_autoConnectEnabled = enabled; }
     void SetReconnectBackoff(int initialBackoffMs, int maxBackoffMs, int idleRetryMs);
+    // Optional callback used to re-resolve the peer address (e.g. via LAN
+    // discovery) when reconnect attempts stall. Returns a fresh host/IP, or
+    // std::nullopt when no better address is known.
+    void SetHostResolver(std::function<std::optional<std::string>()> resolver);
     bool Connect();
     void RunLoop();
     bool SendMouse(const MouseData& mouse);
+    bool SendKeyboard(const KeyboardData& keyboard);
     bool SendPacket(MWBPacket& packet, bool isBig);
     void Stop();
     void SetScreenSize(int w, int h) { m_screenW = w; m_screenH = h; }
 
 private:
     std::string m_host;
+    std::mutex m_hostMutex;
     int m_port;
     int m_clipboardPort;
     std::string m_key;
@@ -101,6 +107,18 @@ private:
     int m_reconnectInitialBackoffMs{1000};
     int m_reconnectMaxBackoffMs{30000};
     int m_reconnectIdleRetryMs{30000};
+
+    std::function<std::optional<std::string>()> m_hostResolver;
+
+    std::atomic<bool> m_networkChanged{false};
+    int m_netlinkFd{-1};
+    std::thread m_netlinkThread;
+
+    std::string HostSnapshot();
+    bool TryRefreshHostFromResolver();
+    void StartNetworkChangeWatcher();
+    void NetworkChangeWatcherLoop();
+    bool ReconnectSleep(int delayMs);
 
     void HeartbeatLoop();
     void SendHello();

@@ -12,9 +12,12 @@
 #include <iostream>
 #include <iomanip>
 #include <limits>
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
 #include <optional>
+#include <poll.h>
 #include <random>
 #include <sstream>
 #include <sys/socket.h>
@@ -824,6 +827,9 @@ NetworkManager::~NetworkManager() {
     if (m_clipboardServerThread.joinable()) {
         m_clipboardServerThread.join();
     }
+    if (m_netlinkThread.joinable()) {
+        m_netlinkThread.join();
+    }
 }
 
 void NetworkManager::Stop() {
@@ -831,6 +837,7 @@ void NetworkManager::Stop() {
     closeSocket(m_serverFd);
     closeSocket(m_clipboardServerFd);
     closeSocket(m_socket);
+    closeSocket(m_netlinkFd);
     ShutdownSessionSockets();
     WaitForInboundSessionsToFinish();
 }
@@ -947,6 +954,128 @@ void NetworkManager::SetReconnectBackoff(int initialBackoffMs, int maxBackoffMs,
     m_reconnectIdleRetryMs = policy.idleRetryMs;
 }
 
+void NetworkManager::SetHostResolver(std::function<std::optional<std::string>()> resolver) {
+    m_hostResolver = std::move(resolver);
+}
+
+std::string NetworkManager::HostSnapshot() {
+    std::lock_guard<std::mutex> lock(m_hostMutex);
+    return m_host;
+}
+
+bool NetworkManager::TryRefreshHostFromResolver() {
+    if (!m_hostResolver) {
+        return false;
+    }
+
+    const auto resolved = m_hostResolver();
+    if (!resolved || resolved->empty()) {
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_hostMutex);
+        if (m_host == *resolved) {
+            return false;
+        }
+        std::cout << "[RECONNECT] Peer address changed to " << *resolved
+                  << " via rediscovery; resetting backoff." << std::endl;
+        m_host = *resolved;
+    }
+
+    if (const auto resolvedAddress = ResolveConfiguredHostAddress(*resolved); resolvedAddress.has_value()) {
+        m_expectedPeerAddress = *resolvedAddress;
+    } else {
+        m_expectedPeerAddress = 0;
+    }
+    return true;
+}
+
+void NetworkManager::StartNetworkChangeWatcher() {
+    if (m_netlinkThread.joinable()) {
+        return;
+    }
+
+    m_netlinkFd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+    if (m_netlinkFd < 0) {
+        std::cerr << "WARN: Network-change watcher unavailable (netlink socket failed: "
+                  << std::strerror(errno) << "); falling back to backoff-only rediscovery." << std::endl;
+        return;
+    }
+
+    struct sockaddr_nl addr {};
+    addr.nl_family = AF_NETLINK;
+    // Link up/down and IPv4/IPv6 address changes are the signals that a peer or
+    // this host may have moved (DHCP lease, VPN up, resume-from-suspend).
+    addr.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR;
+    if (bind(m_netlinkFd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
+        std::cerr << "WARN: Network-change watcher bind failed: " << std::strerror(errno) << std::endl;
+        closeSocket(m_netlinkFd);
+        m_netlinkFd = -1;
+        return;
+    }
+
+    m_netlinkThread = std::thread(&NetworkManager::NetworkChangeWatcherLoop, this);
+}
+
+void NetworkManager::NetworkChangeWatcherLoop() {
+    char buffer[4096];
+    while (m_running) {
+        struct pollfd pfd {};
+        pfd.fd = m_netlinkFd;
+        pfd.events = POLLIN;
+        const int ready = poll(&pfd, 1, 500);
+        if (ready < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        if (ready == 0 || !(pfd.revents & POLLIN)) {
+            continue;
+        }
+
+        const ssize_t received = recv(m_netlinkFd, buffer, sizeof(buffer), MSG_DONTWAIT);
+        if (received <= 0) {
+            continue;
+        }
+
+        bool relevant = false;
+        int len = static_cast<int>(received);
+        for (struct nlmsghdr* nh = reinterpret_cast<struct nlmsghdr*>(buffer);
+             NLMSG_OK(nh, len);
+             nh = NLMSG_NEXT(nh, len)) {
+            if (nh->nlmsg_type == NLMSG_DONE) {
+                break;
+            }
+            if (nh->nlmsg_type == RTM_NEWLINK || nh->nlmsg_type == RTM_DELLINK ||
+                nh->nlmsg_type == RTM_NEWADDR || nh->nlmsg_type == RTM_DELADDR) {
+                relevant = true;
+            }
+        }
+
+        if (relevant && !m_networkChanged.exchange(true)) {
+            std::cout << "[RECONNECT] Network change detected; will force immediate peer rediscovery." << std::endl;
+        }
+    }
+}
+
+bool NetworkManager::ReconnectSleep(int delayMs) {
+    const int sliceMs = 100;
+    int remaining = std::max(0, delayMs);
+    while (m_running && remaining > 0) {
+        // Wake early when the network topology changed so we re-resolve the peer
+        // immediately instead of waiting out the backoff.
+        if (m_networkChanged.load()) {
+            return m_running;
+        }
+        const int step = std::min(sliceMs, remaining);
+        std::this_thread::sleep_for(std::chrono::milliseconds(step));
+        remaining -= step;
+    }
+    return m_running;
+}
+
 void NetworkManager::SetLocalIdentity(uint32_t machineId, const std::string& machineName) {
     if (machineId != 0) {
         m_myId = machineId;
@@ -986,6 +1115,7 @@ bool NetworkManager::Connect() {
     }
 
     m_running = true;
+    StartNetworkChangeWatcher();
     StartServerListener();
     StartClipboardServerListener();
     if (m_serverFd < 0 || m_clipboardServerFd < 0) {
@@ -1015,13 +1145,14 @@ bool NetworkManager::ConnectOutbound(std::array<uint8_t, 16>& handshakeChallenge
         m_discardInlineClipboard = false;
     }
 
-    if (!connectToRemoteSocket(m_host, m_port, m_socket)) {
-        std::cerr << "[OUTBOUND] connect to " << m_host << ":" << m_port
+    const std::string host = HostSnapshot();
+    if (!connectToRemoteSocket(host, m_port, m_socket)) {
+        std::cerr << "[OUTBOUND] connect to " << host << ":" << m_port
                   << " failed: " << GetLastConnectError() << std::endl;
         return false;
     }
 
-    printf("[OUTBOUND] Connected to %s:%d\n", m_host.c_str(), m_port);
+    printf("[OUTBOUND] Connected to %s:%d\n", host.c_str(), m_port);
     fflush(stdout);
 
     if (const auto peerAddress = GetPeerIpv4Address(m_socket); peerAddress.has_value()) {
@@ -1086,6 +1217,14 @@ bool NetworkManager::SendMouse(const MouseData& mouse) {
     std::memset(&packet, 0, sizeof(packet));
     packet.type = static_cast<uint8_t>(PackageType::Mouse);
     std::memcpy(packet.data, &mouse, sizeof(mouse));
+    return SendPacket(packet, false);
+}
+
+bool NetworkManager::SendKeyboard(const KeyboardData& keyboard) {
+    MWBPacket packet;
+    std::memset(&packet, 0, sizeof(packet));
+    packet.type = static_cast<uint8_t>(PackageType::Keyboard);
+    std::memcpy(packet.data, &keyboard, sizeof(keyboard));
     return SendPacket(packet, false);
 }
 
@@ -1537,7 +1676,7 @@ void NetworkManager::RequestRemoteClipboard(uint32_t expectedRemoteMachineId) {
     }
 
     int fd = -1;
-    if (!connectToRemoteSocket(m_host, m_clipboardPort, fd)) {
+    if (!connectToRemoteSocket(HostSnapshot(), m_clipboardPort, fd)) {
         std::cerr << "WARN: Failed to connect to remote clipboard socket on port " << m_clipboardPort
                   << ": " << GetLastConnectError() << std::endl;
         return;
@@ -1629,7 +1768,7 @@ void NetworkManager::PushClipboardToRemote(uint32_t expectedRemoteMachineId) {
     }
 
     int fd = -1;
-    if (!connectToRemoteSocket(m_host, m_clipboardPort, fd)) {
+    if (!connectToRemoteSocket(HostSnapshot(), m_clipboardPort, fd)) {
         std::cerr << "WARN: Failed to connect to remote clipboard socket on port " << m_clipboardPort
                   << ": " << GetLastConnectError() << std::endl;
         return;
@@ -1696,15 +1835,31 @@ void NetworkManager::RunLoop() {
         }
 
         idleLogged = false;
+        // Event-driven fast path: a netlink link/address change (DHCP lease, VPN
+        // up, resume-from-suspend) means the peer may have moved. Re-resolve
+        // immediately and reset backoff rather than waiting it out.
+        if (m_socket < 0 && m_networkChanged.exchange(false)) {
+            std::cout << "[RECONNECT] Acting on network change: forcing peer rediscovery." << std::endl;
+            TryRefreshHostFromResolver();
+            reconnectState = InitialReconnectState(reconnectPolicy);
+        }
         std::string remoteName;
         std::array<uint8_t, 16> outboundChallenge{};
         if (m_socket < 0) {
+            // Peer has been unreachable long enough that backoff saturated into
+            // the idle state. Before the next slow retry, re-resolve the peer
+            // address once (LAN discovery) in case its IP changed. The idle
+            // cadence rate-limits this, so we never scan while connected or
+            // during the initial fast-retry burst.
+            if (reconnectState.useIdleRetry && TryRefreshHostFromResolver()) {
+                reconnectState = InitialReconnectState(reconnectPolicy);
+            }
             if (!ConnectOutbound(outboundChallenge)) {
                 const int scheduledBackoffMs = ScheduledReconnectDelayMs(reconnectPolicy, reconnectState);
                 const int delayMs = AddReconnectJitter(scheduledBackoffMs);
                 std::cout << "[RECONNECT] Peer unavailable. Retrying in " << delayMs << " ms." << std::endl;
                 reconnectState = AdvanceReconnectAfterFailure(reconnectPolicy, reconnectState);
-                if (!SleepWithStop(m_running, delayMs)) {
+                if (!ReconnectSleep(delayMs)) {
                     break;
                 }
                 continue;
@@ -1723,7 +1878,7 @@ void NetworkManager::RunLoop() {
             const int delayMs = AddReconnectJitter(scheduledBackoffMs);
             std::cout << "[RECONNECT] Protocol error (noise). Retrying in " << delayMs << " ms." << std::endl;
             reconnectState = AdvanceReconnectAfterFailure(reconnectPolicy, reconnectState);
-            if (!SleepWithStop(m_running, delayMs)) {
+            if (!ReconnectSleep(delayMs)) {
                 break;
             }
             continue;
@@ -1739,7 +1894,7 @@ void NetworkManager::RunLoop() {
             const int delayMs = AddReconnectJitter(scheduledBackoffMs);
             std::cout << "[RECONNECT] Crypto error (noise). Retrying in " << delayMs << " ms." << std::endl;
             reconnectState = AdvanceReconnectAfterFailure(reconnectPolicy, reconnectState);
-            if (!SleepWithStop(m_running, delayMs)) {
+            if (!ReconnectSleep(delayMs)) {
                 break;
             }
             continue;
@@ -1849,7 +2004,7 @@ void NetworkManager::RunLoop() {
             const int delayMs = AddReconnectJitter(scheduledBackoffMs);
             std::cout << "[RECONNECT] Handshake failed. Retrying in " << delayMs << " ms." << std::endl;
             reconnectState = AdvanceReconnectAfterFailure(reconnectPolicy, reconnectState);
-            if (!SleepWithStop(m_running, delayMs)) {
+            if (!ReconnectSleep(delayMs)) {
                 break;
             }
             continue;
@@ -2053,7 +2208,7 @@ void NetworkManager::ServerListenerLoop() {
             break;
         }
 
-        if (!AddressMatchesConfiguredHost(clientAddress, m_host, m_expectedPeerAddress.load())) {
+        if (!AddressMatchesConfiguredHost(clientAddress, HostSnapshot(), m_expectedPeerAddress.load())) {
             std::cerr << "[SERVER] Rejected inbound connection from unexpected peer "
                       << FormatIpv4Address(clientAddress.sin_addr) << std::endl;
             closeSocket(clientFd);
@@ -2399,7 +2554,7 @@ void NetworkManager::ClipboardServerListenerLoop() {
             break;
         }
 
-        if (!AddressMatchesConfiguredHost(clientAddress, m_host, m_expectedPeerAddress.load())) {
+        if (!AddressMatchesConfiguredHost(clientAddress, HostSnapshot(), m_expectedPeerAddress.load())) {
             std::cerr << "[CLIPBOARD] Rejected inbound connection from unexpected peer "
                       << FormatIpv4Address(clientAddress.sin_addr) << std::endl;
             closeSocket(clientFd);

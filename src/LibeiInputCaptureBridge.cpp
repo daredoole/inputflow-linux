@@ -27,9 +27,12 @@
 #include <fstream>
 #include <cmath>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace mwb {
 namespace {
@@ -388,7 +391,19 @@ constexpr uint32_t kCapabilityKeyboard = 1;
 constexpr uint32_t kCapabilityPointer = 2;
 constexpr uint32_t kCapabilityMask = kCapabilityKeyboard | kCapabilityPointer;
 
-constexpr uint32_t kRightBarrierId = 1;
+constexpr uint32_t kLeftBarrierId = 1;
+constexpr uint32_t kRightBarrierId = 2;
+constexpr uint32_t kUpBarrierId = 3;
+constexpr uint32_t kDownBarrierId = 4;
+
+struct CaptureTarget {
+    uint32_t barrierId{kRightBarrierId};
+    EdgeDirection exitEdge{EdgeDirection::Right};
+    EdgeDirection entryEdge{EdgeDirection::Left};
+    std::string machineId;
+    int startX{0};
+    int startY{32767};
+};
 
 struct RequestResult {
     bool done{false};
@@ -443,7 +458,12 @@ bool WaitForRequest(GDBusConnection* connection,
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     while (!result.done && std::chrono::steady_clock::now() < deadline) {
-        g_main_context_iteration(nullptr, TRUE);
+        while (!result.done && g_main_context_pending(nullptr)) {
+            g_main_context_iteration(nullptr, FALSE);
+        }
+        if (!result.done) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
     }
 
     g_dbus_connection_signal_unsubscribe(connection, subscription);
@@ -590,25 +610,77 @@ std::optional<ZoneInfo> GetZones(GDBusConnection* connection, const std::string&
     return selected;
 }
 
-bool SetRightBarrier(GDBusConnection* connection,
-                     const std::string& sessionHandle,
-                     const ZoneInfo& zone) {
+uint32_t BarrierIdForEdge(EdgeDirection edge) {
+    switch (edge) {
+    case EdgeDirection::Left:
+        return kLeftBarrierId;
+    case EdgeDirection::Right:
+        return kRightBarrierId;
+    case EdgeDirection::Up:
+        return kUpBarrierId;
+    case EdgeDirection::Down:
+        return kDownBarrierId;
+    }
+    return kRightBarrierId;
+}
+
+void AddBarrierForEdge(GVariantBuilder& barriers, const ZoneInfo& zone, EdgeDirection edge) {
+    GVariantBuilder barrier;
+    g_variant_builder_init(&barrier, G_VARIANT_TYPE("a{sv}"));
+    g_variant_builder_add(&barrier, "{sv}", "barrier_id", g_variant_new_uint32(BarrierIdForEdge(edge)));
+
+    int32_t x1 = zone.x;
+    int32_t y1 = zone.y;
+    int32_t x2 = zone.x;
+    int32_t y2 = zone.y;
+    switch (edge) {
+    case EdgeDirection::Left:
+        x1 = x2 = zone.x;
+        y1 = zone.y;
+        y2 = zone.y + static_cast<int32_t>(zone.height) - 1;
+        break;
+    case EdgeDirection::Right:
+        x1 = x2 = zone.x + static_cast<int32_t>(zone.width);
+        y1 = zone.y;
+        y2 = zone.y + static_cast<int32_t>(zone.height) - 1;
+        break;
+    case EdgeDirection::Up:
+        x1 = zone.x;
+        x2 = zone.x + static_cast<int32_t>(zone.width) - 1;
+        y1 = y2 = zone.y;
+        break;
+    case EdgeDirection::Down:
+        x1 = zone.x;
+        x2 = zone.x + static_cast<int32_t>(zone.width) - 1;
+        y1 = y2 = zone.y + static_cast<int32_t>(zone.height);
+        break;
+    }
+    g_variant_builder_add(&barrier, "{sv}", "position", g_variant_new("(iiii)", x1, y1, x2, y2));
+    g_variant_builder_add_value(&barriers, g_variant_builder_end(&barrier));
+}
+
+bool SetPointerBarriers(GDBusConnection* connection,
+                        const std::string& sessionHandle,
+                        const ZoneInfo& zone,
+                        const std::vector<CaptureTarget>& targets) {
+    if (targets.empty()) {
+        return false;
+    }
+
     GVariantBuilder options;
     g_variant_builder_init(&options, G_VARIANT_TYPE("a{sv}"));
     g_variant_builder_add(&options, "{sv}", "handle_token", g_variant_new_string(UniqueToken("barrier").c_str()));
 
-    GVariantBuilder barrier;
-    g_variant_builder_init(&barrier, G_VARIANT_TYPE("a{sv}"));
-    g_variant_builder_add(&barrier, "{sv}", "barrier_id", g_variant_new_uint32(kRightBarrierId));
-    const int32_t x = zone.x + static_cast<int32_t>(zone.width);
-    const int32_t y1 = zone.y;
-    const int32_t y2 = zone.y + static_cast<int32_t>(zone.height) - 1;
-    g_variant_builder_add(&barrier, "{sv}", "position", g_variant_new("(iiii)", x, y1, x, y2));
-    GVariant* barrierValue = g_variant_builder_end(&barrier);
-
     GVariantBuilder barriers;
     g_variant_builder_init(&barriers, G_VARIANT_TYPE("aa{sv}"));
-    g_variant_builder_add_value(&barriers, barrierValue);
+    std::vector<EdgeDirection> addedEdges;
+    for (const auto& target : targets) {
+        if (std::find(addedEdges.begin(), addedEdges.end(), target.exitEdge) != addedEdges.end()) {
+            continue;
+        }
+        AddBarrierForEdge(barriers, zone, target.exitEdge);
+        addedEdges.push_back(target.exitEdge);
+    }
 
     GError* error = nullptr;
     GVariant* reply = g_dbus_connection_call_sync(
@@ -637,7 +709,7 @@ bool SetRightBarrier(GDBusConnection* connection,
     if (ok && result.results) {
         GVariant* failed = g_variant_lookup_value(result.results, "failed_barriers", G_VARIANT_TYPE("au"));
         if (failed && g_variant_n_children(failed) > 0) {
-            std::cerr << "WARN: libei input capture portal rejected the right-edge barrier." << std::endl;
+            std::cerr << "WARN: libei input capture portal rejected one or more topology barriers." << std::endl;
             g_variant_unref(failed);
             g_variant_unref(result.results);
             return false;
@@ -650,6 +722,88 @@ bool SetRightBarrier(GDBusConnection* connection,
         g_variant_unref(result.results);
     }
     return ok;
+}
+
+std::optional<EdgeDirection> DominantEdgeFromDelta(double dx, double dy) {
+    if (std::abs(dx) >= std::abs(dy)) {
+        if (dx > 0.0) return EdgeDirection::Right;
+        if (dx < 0.0) return EdgeDirection::Left;
+    } else {
+        if (dy > 0.0) return EdgeDirection::Down;
+        if (dy < 0.0) return EdgeDirection::Up;
+    }
+    return std::nullopt;
+}
+
+bool MovementReturnsToLocal(const CaptureTarget& target, int x, int y, double dx, double dy) {
+    switch (target.entryEdge) {
+    case EdgeDirection::Left:
+        return x <= 0 && dx < 0.0;
+    case EdgeDirection::Right:
+        return x >= 65535 && dx > 0.0;
+    case EdgeDirection::Up:
+        return y <= 0 && dy < 0.0;
+    case EdgeDirection::Down:
+        return y >= 65535 && dy > 0.0;
+    }
+    return false;
+}
+
+std::vector<CaptureTarget> BuildTopologyCaptureTargets(const LibeiInputCaptureBridgeOptions& options) {
+    std::vector<CaptureTarget> targets;
+    if (!options.topology || options.localMachineName.empty() ||
+        options.desktopWidth <= 0 || options.desktopHeight <= 0) {
+        return targets;
+    }
+
+    const std::pair<EdgeDirection, std::pair<int, int>> probes[] = {
+        {EdgeDirection::Left,  {0, 32767}},
+        {EdgeDirection::Right, {65535, 32767}},
+        {EdgeDirection::Up,    {32767, 0}},
+        {EdgeDirection::Down,  {32767, 65535}},
+    };
+
+    for (const auto& probe : probes) {
+        const auto transition = ResolveTopologyPointerTransitionForMachine(
+            *options.topology,
+            options.localMachineName,
+            options.desktopWidth,
+            options.desktopHeight,
+            probe.second.first,
+            probe.second.second);
+        if (!transition.has_value()) {
+            continue;
+        }
+        const auto targetMachine = options.topology->machineIdForDisplay(transition->targetDisplayId);
+        const auto targetPoint = MapTransitionToTargetNormalizedPoint(*options.topology, *transition);
+        if (!targetMachine.has_value() || !targetPoint.has_value() || *targetMachine == options.localMachineName) {
+            continue;
+        }
+        targets.push_back(CaptureTarget{
+            BarrierIdForEdge(transition->exitEdge),
+            transition->exitEdge,
+            transition->entryEdge,
+            *targetMachine,
+            targetPoint->x,
+            targetPoint->y,
+        });
+    }
+
+    return targets;
+}
+
+std::vector<CaptureTarget> BuildFallbackAndroidCaptureTarget(const LibeiInputCaptureBridgeOptions& options) {
+    if (options.sendMouse || options.sendMouseToMachine) {
+        return {CaptureTarget{
+            kRightBarrierId,
+            EdgeDirection::Right,
+            EdgeDirection::Left,
+            options.androidPeerName.empty() ? "android" : options.androidPeerName,
+            0,
+            32767,
+        }};
+    }
+    return {};
 }
 
 std::optional<int> ConnectToEis(GDBusConnection* connection, const std::string& sessionHandle) {
@@ -817,8 +971,13 @@ void LibeiInputCaptureBridge::Run() {
         return;
     }
 
+    std::vector<CaptureTarget> captureTargets = BuildTopologyCaptureTargets(m_options);
+    if (captureTargets.empty()) {
+        captureTargets = BuildFallbackAndroidCaptureTarget(m_options);
+    }
+
     const auto zone = GetZones(connection, *sessionHandle);
-    if (!zone.has_value() || !SetRightBarrier(connection, *sessionHandle, *zone)) {
+    if (!zone.has_value() || !SetPointerBarriers(connection, *sessionHandle, *zone, captureTargets)) {
         CloseSession(connection, *sessionHandle);
         g_object_unref(connection);
         m_running = false;
@@ -858,19 +1017,57 @@ void LibeiInputCaptureBridge::Run() {
         return;
     }
 
-    std::cout << "[ANDROID] libei input capture enabled on right edge via XDG portal." << std::endl;
-    int androidX = 0;
-    int androidY = 32767;
+    std::cout << "[TOPOLOGY] libei input capture enabled with " << captureTargets.size()
+              << " topology barrier(s)." << std::endl;
+    int remoteX = captureTargets.front().startX;
+    int remoteY = captureTargets.front().startY;
     int keyboardEventsLogged = 0;
     bool remoteControlActive = false;
+    std::optional<CaptureTarget> activeTarget;
+    const std::string androidMachineId = m_options.androidPeerName.empty() ? "android" : m_options.androidPeerName;
     const auto setRemoteControlActive = [&](bool active) {
         if (remoteControlActive == active) {
             return;
         }
         remoteControlActive = active;
-        if (m_options.sendControl) {
+        if (activeTarget.has_value() && m_options.sendControlForMachine) {
+            m_options.sendControlForMachine(active, activeTarget->machineId);
+        } else if (m_options.sendControl) {
             m_options.sendControl(active);
         }
+    };
+    const auto sendMouse = [&](const MouseData& mouse) {
+        if (activeTarget.has_value() && m_options.sendMouseToMachine) {
+            return m_options.sendMouseToMachine(mouse, activeTarget->machineId);
+        }
+        return m_options.sendMouse ? m_options.sendMouse(mouse) : false;
+    };
+    const auto sendKeyboard = [&](const KeyboardData& keyboard) {
+        if (activeTarget.has_value() && m_options.sendKeyboardToMachine) {
+            return m_options.sendKeyboardToMachine(keyboard, activeTarget->machineId);
+        }
+        return m_options.sendKeyboard ? m_options.sendKeyboard(keyboard) : false;
+    };
+    const auto selectTarget = [&](double dx, double dy) -> bool {
+        if (activeTarget.has_value()) {
+            return true;
+        }
+        const auto edge = DominantEdgeFromDelta(dx, dy);
+        if (!edge.has_value()) {
+            return false;
+        }
+        const auto it = std::find_if(captureTargets.begin(), captureTargets.end(),
+            [&](const CaptureTarget& target) { return target.exitEdge == *edge; });
+        if (it == captureTargets.end()) {
+            return false;
+        }
+        activeTarget = *it;
+        remoteX = activeTarget->startX;
+        remoteY = activeTarget->startY;
+        std::cout << "[TOPOLOGY] Captured local pointer through "
+                  << edgeDirectionName(activeTarget->exitEdge)
+                  << " edge for target " << activeTarget->machineId << "." << std::endl;
+        return true;
     };
     while (m_running) {
         pollfd fds[1] = {
@@ -923,19 +1120,22 @@ void LibeiInputCaptureBridge::Run() {
             case EI_EVENT_POINTER_MOTION: {
                 const double dx = ei_event_pointer_get_dx(event);
                 const double dy = ei_event_pointer_get_dy(event);
-                androidX = ClampNormalized(androidX + static_cast<int>(std::lround(dx * 40.0)));
-                androidY = ClampNormalized(androidY + static_cast<int>(std::lround(dy * 40.0)));
-                if (androidX <= 0 && dx < 0.0) {
+                if (!selectTarget(dx, dy)) {
+                    break;
+                }
+                remoteX = ClampNormalized(remoteX + static_cast<int>(std::lround(dx * 40.0)));
+                remoteY = ClampNormalized(remoteY + static_cast<int>(std::lround(dy * 40.0)));
+                if (MovementReturnsToLocal(*activeTarget, remoteX, remoteY, dx, dy)) {
                     setRemoteControlActive(false);
                     ReleaseCapture(connection, *sessionHandle);
-                    std::cout << "[ANDROID] libei input capture released back to Fedora from Android left edge." << std::endl;
+                    std::cout << "[TOPOLOGY] Released input back to Fedora from "
+                              << activeTarget->machineId << "." << std::endl;
+                    activeTarget.reset();
                     break;
                 }
                 setRemoteControlActive(true);
-                MouseData mouse{androidX, androidY, 0, WM_MOUSEMOVE};
-                if (m_options.sendMouse) {
-                    m_options.sendMouse(mouse);
-                }
+                MouseData mouse{remoteX, remoteY, 0, WM_MOUSEMOVE};
+                sendMouse(mouse);
                 break;
             }
             case EI_EVENT_BUTTON_BUTTON: {
@@ -949,20 +1149,23 @@ void LibeiInputCaptureBridge::Run() {
                 } else if (button == BTN_MIDDLE) {
                     message = press ? WM_MBUTTONDOWN : WM_MBUTTONUP;
                 }
-                if (message != 0 && m_options.sendMouse) {
-                    MouseData mouse{androidX, androidY, 0, message};
-                    m_options.sendMouse(mouse);
+                if (message != 0 && activeTarget.has_value()) {
+                    MouseData mouse{remoteX, remoteY, 0, message};
+                    sendMouse(mouse);
                 }
                 break;
             }
             case EI_EVENT_SCROLL_DELTA: {
                 const double dx = ei_event_scroll_get_dx(event);
                 const double dy = ei_event_scroll_get_dy(event);
-                if ((std::abs(dx) > 0.01 || std::abs(dy) > 0.01) && m_options.sendGesture) {
+                if ((std::abs(dx) > 0.01 || std::abs(dy) > 0.01) &&
+                    activeTarget.has_value() &&
+                    activeTarget->machineId == androidMachineId &&
+                    m_options.sendGesture) {
                     m_options.sendGesture("scroll", dx, dy);
-                } else if (std::abs(dy) > 0.01 && m_options.sendMouse) {
-                    MouseData mouse{androidX, androidY, static_cast<int32_t>(std::lround(-dy * 120.0)), WM_MOUSEWHEEL};
-                    m_options.sendMouse(mouse);
+                } else if (std::abs(dy) > 0.01 && activeTarget.has_value()) {
+                    MouseData mouse{remoteX, remoteY, static_cast<int32_t>(std::lround(-dy * 120.0)), WM_MOUSEWHEEL};
+                    sendMouse(mouse);
                 }
                 break;
             }
@@ -973,15 +1176,15 @@ void LibeiInputCaptureBridge::Run() {
                 const uint32_t key = ei_event_keyboard_get_key(event);
                 const bool press = ei_event_keyboard_get_key_is_press(event);
                 const auto vk = LinuxKeyToVirtualKey(key);
-                if (vk.has_value() && m_options.sendKeyboard) {
+                if (vk.has_value() && activeTarget.has_value()) {
                     KeyboardData keyboard{*vk, press ? 0u : LLKHF_UP};
                     if (keyboardEventsLogged < 20) {
-                        std::cout << "[ANDROID] libei keyboard event key=" << key
+                        std::cout << "[TOPOLOGY] libei keyboard event key=" << key
                                   << " vk=" << *vk
                                   << " press=" << (press ? "true" : "false") << std::endl;
                         ++keyboardEventsLogged;
                     }
-                    m_options.sendKeyboard(keyboard);
+                    sendKeyboard(keyboard);
                 }
                 break;
             }

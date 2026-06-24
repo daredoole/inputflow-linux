@@ -38,7 +38,7 @@ void TestAppConfigRoundTrip() {
     config.connectionMode = mwb::ConnectionMode::Hybrid;
     config.host = "192.0.2.107";
     config.key = "secret";
-    config.machineName = "fedora";
+    config.machineName = "linux-desktop";
     config.port = 15101;
     config.autoConnectEnabled = false;
     config.reconnectInitialBackoffMs = 1500;
@@ -191,7 +191,7 @@ void TestAppConfigKeyFileRoundTrip() {
     mwb::AppConfig config;
     config.host = "192.0.2.108";
     config.keyFile = "secrets/mwb.key";
-    config.machineName = "fedora";
+    config.machineName = "linux-desktop";
     config.port = 15102;
 
     const std::filesystem::path path = MakeTempPath("mwb-config-key-file-test.ini");
@@ -228,7 +228,7 @@ void TestAppConfigKeySecretIdRoundTrip() {
         "key=\n"
         "key_file=\n"
         "key_secret_id=org.freedesktop.secrets/mwb-linux\n"
-        "machine_name=fedora\n"
+        "machine_name=linux-desktop\n"
         "port=15103\n";
 
     Expect(mwb::ParseAppConfig(text, config, &error), "ParseAppConfig should accept key_secret_id");
