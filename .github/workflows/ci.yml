@@ -36,6 +36,11 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # Drop pre-installed third-party repos (Microsoft/azure) that
+          # intermittently 403 and break apt-get update; we only need Ubuntu's.
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/azure-cli.list \
+                     /etc/apt/sources.list.d/microsoft*.list || true
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
@@ -122,6 +127,11 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # Drop pre-installed third-party repos (Microsoft/azure) that
+          # intermittently 403 and break apt-get update; we only need Ubuntu's.
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/azure-cli.list \
+                     /etc/apt/sources.list.d/microsoft*.list || true
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
