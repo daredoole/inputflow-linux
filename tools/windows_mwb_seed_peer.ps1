@@ -1,5 +1,5 @@
 param(
-    [string]$PeerName = "fedora",
+    [string]$PeerName = "linux-desktop",
     [string]$PeerIp = "",
     [string]$SecurityKey = "",
     [ValidateSet("Auto", "TopLeft", "TopRight", "BottomLeft", "BottomRight")]

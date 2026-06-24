@@ -19,6 +19,15 @@ inputflow-windows-pair-*.ps1
 AGENTS.md
 artifacts/
 
+# Android build / local SDK + signing material (never commit)
+.gradle/
+android/local.properties
+local.properties
+*.keystore
+*.jks
+key.properties
+keystore.properties
+
 # Editor / OS noise
 .vscode/
 *.swp

@@ -145,11 +145,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshStatus() {
-        val state = if (InputFlowAccessibilityService.instance != null)
-            RelayForegroundService.STATE_CONNECTED
-        else
+        val service = RelayForegroundService.instance
+        if (service != null) {
+            updateStatus(RelayForegroundService.currentState, RelayForegroundService.currentDetail)
+            return
+        }
+
+        val prefs = getSharedPreferences(RelayForegroundService.PREFS, Context.MODE_PRIVATE)
+        val savedState = prefs.getString(
+            RelayForegroundService.KEY_STATUS_STATE,
             RelayForegroundService.STATE_DISCONNECTED
-        updateStatus(state, null)
+        ) ?: RelayForegroundService.STATE_DISCONNECTED
+        val updatedAt = prefs.getLong(RelayForegroundService.KEY_STATUS_UPDATED_MS, 0L)
+        val recentlyUpdated = System.currentTimeMillis() - updatedAt < 5000L
+        if (!recentlyUpdated || savedState == RelayForegroundService.STATE_DISCONNECTED) {
+            updateStatus(RelayForegroundService.STATE_DISCONNECTED, null)
+            return
+        }
+
+        val detail = if (prefs.getBoolean(RelayForegroundService.KEY_STATUS_HAS_DETAIL, false)) {
+            prefs.getString(RelayForegroundService.KEY_STATUS_DETAIL, null)
+        } else {
+            null
+        }
+        updateStatus(savedState, detail)
     }
 
     private fun updateStatus(state: String, detail: String?) {

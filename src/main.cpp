@@ -67,7 +67,7 @@ void PrintGeneralUsage(std::ostream& out, const char* argv0) {
         << " [--latency-report]\n";
     out << "       " << binary << " discover [--state PATH] [--port PORT] [--timeout-ms MS] [--max-hosts N]\n";
     out << "       " << binary << " doctor [--config PATH] [--state PATH]\n";
-    out << "       " << binary << " android-pair [--config PATH]\n";
+    out << "       " << binary << " android-pair [--config PATH] [--generate]\n";
     out << "       " << binary << " topology explain [PATH] [--config PATH]\n";
     out << "       " << binary << " init-config [--config PATH] [--force] [--host IP] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME] [--port PORT] [--connection-mode powertoys|inputflow|hybrid]\n";
     out << "       " << binary << " export-windows-pair [--config PATH] [--output PATH] [--force] [--dry-run] [--check] [--linux-ip IP] [--position auto|top-left|top-right|bottom-left|bottom-right] [--key KEY | --key-file PATH | --key-secret-id ID] [--name NAME]\n";
@@ -1012,6 +1012,20 @@ std::optional<std::string> TryRecoverHostFromKnownPeers(const mwb::AppConfig& co
     discoveryOptions.connectTimeoutMs = 200;
     discoveryOptions.maxHostsPerSubnet = 256;
     const auto candidates = mwb::DiscoverLanCandidates(discoveryOptions);
+    if (!mwb::IsIpv4Literal(config.host)) {
+        for (const auto& candidate : candidates) {
+            if (candidate.status != mwb::DiscoveryStatus::Open ||
+                candidate.hostName.empty() ||
+                !mwb::IsIpv4Literal(candidate.ipAddress) ||
+                !mwb::HostLabelsMatch(candidate.hostName, config.host)) {
+                continue;
+            }
+            std::cout << "[RECOVERY] Configured peer " << config.host
+                      << " resolved by LAN discovery to "
+                      << candidate.ipAddress << " (name=" << candidate.hostName << ")" << std::endl;
+            return candidate.ipAddress;
+        }
+    }
     for (const auto& host : mwb::CollectRecoveryDiscoveredHosts(state, config.host, config.port, candidates)) {
         std::cout << "[RECOVERY] Configured peer " << config.host
                   << " is unavailable; using discovered address "
@@ -2704,8 +2718,25 @@ int HandleTopologyCommand(const std::vector<std::string>& args) {
     return 0;
 }
 
+std::string GenerateRelaySecret() {
+    std::ifstream urandom("/dev/urandom", std::ios::binary);
+    unsigned char buf[32];
+    if (!urandom.read(reinterpret_cast<char*>(buf), sizeof(buf))) {
+        return {};
+    }
+    static const char* kHex = "0123456789abcdef";
+    std::string out;
+    out.reserve(sizeof(buf) * 2);
+    for (unsigned char b : buf) {
+        out.push_back(kHex[b >> 4]);
+        out.push_back(kHex[b & 0x0F]);
+    }
+    return out;
+}
+
 int HandleAndroidPairCommand(const std::vector<std::string>& args) {
     std::filesystem::path configPath = mwb::DefaultConfigPath();
+    bool generate = false;
 
     for (std::size_t index = 0; index < args.size(); ++index) {
         const std::string& arg = args[index];
@@ -2715,6 +2746,8 @@ int HandleAndroidPairCommand(const std::vector<std::string>& args) {
                 return 1;
             }
             configPath = args[++index];
+        } else if (arg == "--generate") {
+            generate = true;
         } else {
             std::cerr << "ERR: Unknown android-pair option: " << arg << std::endl;
             return 1;
@@ -2731,8 +2764,33 @@ int HandleAndroidPairCommand(const std::vector<std::string>& args) {
         std::cerr << "ERR: android_peers_enabled is false in " << configPath << "." << std::endl;
         return 1;
     }
+
+    if (generate) {
+        const std::string secret = GenerateRelaySecret();
+        if (secret.empty()) {
+            std::cerr << "ERR: Failed to generate a random secret." << std::endl;
+            return 1;
+        }
+        config.androidRelaySecret = secret;
+        if (!mwb::SaveConfigFile(configPath, config, error)) {
+            std::cerr << "ERR: Failed to save generated secret: " << error << std::endl;
+            return 1;
+        }
+        std::cout << "Generated a strong android_relay_secret and saved it to " << configPath << "." << std::endl;
+    }
+
     if (config.androidRelaySecret.empty()) {
-        std::cerr << "ERR: android_relay_secret is empty in " << configPath << "." << std::endl;
+        std::cerr << "ERR: android_relay_secret is empty in " << configPath
+                  << ". Run: mwb_client android-pair --generate" << std::endl;
+        return 1;
+    }
+    // The relay can drive native (Shizuku/root) input injection on the phone, so
+    // refuse to hand out a pairing URI built around a weak secret.
+    if (!mwb::IsStrongRelaySecret(config.androidRelaySecret)) {
+        std::cerr << "ERR: android_relay_secret is too weak (need >= "
+                  << mwb::kMinRelaySecretLength
+                  << " chars with enough variety). Run: mwb_client android-pair --generate"
+                  << std::endl;
         return 1;
     }
 

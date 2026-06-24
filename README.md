@@ -7,14 +7,17 @@ InputFlow is a native C++17 Linux companion for [Microsoft PowerToys "Mouse With
 
 ## 🚀 Quick Start (Tray & UI Setup)
 
-Recommended first-run flow for most users:
+Recommended first-run flow for most users. (First build the client — see
+[Build & Installation](#️-build--installation) below — then:)
 
 1. **Install Prerequisites:**
    - **Fedora:** `sudo dnf install python3-gobject gtk3 libayatana-appindicator3`
    - **Ubuntu/Debian:** `sudo apt install python3-gi gir1.2-gtk-3.0 libayatana-appindicator3-0.1`
 2. **Launch Setup UI:** Run `./mwb-desktop-ui.sh menu`
 3. **Configure:**
-   - Go to **Settings** -> Enter your Windows Host IP and Security Key.
+   - Go to **Settings** → enter your Windows host and Security Key. Prefer the
+     peer's **name** over a hardcoded IP (or click **Discover…** to pick it) so
+     InputFlow can follow the peer automatically if its IP changes.
 4. **Use PowerToys layout for normal setups:**
    - If this Linux/Fedora machine has one monitor, do not configure topology. Let Windows PowerToys Mouse Without Borders own the Linux/Windows machine placement.
    - If topology was enabled while testing, choose **Use PowerToys Layout Only** to set `topology_enabled=false`.
@@ -35,14 +38,17 @@ For the full beta setup, health-check, diagnostics, connection-quality, and pack
 **Ubuntu / Debian:**
 ```bash
 sudo apt-get install -y build-essential cmake pkg-config libssl-dev zlib1g-dev \
-    python3-gi gir1.2-gtk-3.0 libayatana-appindicator3-dev
+    libx11-dev python3-gi gir1.2-gtk-3.0 libayatana-appindicator3-dev
 ```
 
 **Fedora:**
 ```bash
 sudo dnf install -y gcc-c++ cmake make pkgconf-pkg-config openssl-devel zlib-devel \
-    python3-gobject gtk3 libayatana-appindicator3-devel
+    libX11-devel python3-gobject gtk3 libayatana-appindicator3-devel
 ```
+
+> Clipboard sync also needs a runtime helper: `wl-clipboard` on Wayland, or
+> `xclip`/`xsel` on X11. `mwb_client doctor` reports what's missing.
 
 ### 2. Compile
 
@@ -68,10 +74,12 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 - **Absolute Cursor Movement:** Precise pointer control across screens.
 - **Keyboard Sync:** Full keyboard sharing with media key support.
-- **Rich Clipboard:** Text, HTML, and **Image** synchronization.
+- **Rich Clipboard:** Text, HTML, and **Image** synchronization (plain text stays plain).
 - **Systemd Integration:** Runs as a lightweight user service.
-- **Tray Tool:** Quick access to settings and connection status.
-- **Auto-Reconnect:** Smart backoff logic when Windows goes offline.
+- **Tray + Dashboard:** Connection status, live peer list, LAN peer discovery, and settings that apply on save.
+- **Self-Healing Reconnect:** Follows a peer across IP changes (DHCP/VPN/resume) without a restart — configure peers by **name**.
+- **Lock on Disconnect:** Optionally lock the Linux session when the controlling peer drops.
+- **Android Peer:** Control an Android device as a screen, with no-root (Accessibility/Shizuku) or root native-grade input injection. See [docs/android.md](docs/android.md).
 
 ---
 
@@ -84,6 +92,11 @@ InputFlow is usable today but is still stabilizing. Expect rough edges around re
 - Full Clipboard sync (Text/HTML/Images).
 - `systemd` service management.
 - Windows pairing-helper for easy setup.
+- Self-healing reconnect across peer IP changes.
+- Android peer relay (no-root and, optionally, Shizuku/root native injection).
+
+See the [CHANGELOG](CHANGELOG.md) for what's new and [docs/](docs/) for the full
+guides (compatibility, topology, Android, beta workflow, MWB-parity roadmap).
 
 ---
 

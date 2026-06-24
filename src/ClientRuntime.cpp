@@ -385,6 +385,9 @@ int ClientRuntime::Run() {
             m_options.reconnectInitialBackoffMs,
             m_options.reconnectMaxBackoffMs,
             m_options.reconnectIdleRetryMs);
+        if (m_options.resolveHost) {
+            m_network->SetHostResolver(m_options.resolveHost);
+        }
         if (m_options.localMachineId.has_value() || !m_options.localMachineName.empty()) {
             m_network->SetLocalIdentity(m_options.localMachineId.value_or(0), m_options.localMachineName);
         }
@@ -615,7 +618,7 @@ void ClientRuntime::Stop() {
 }
 
 void ClientRuntime::StartLocalAndroidInputBridge(const ScreenSize& screenSize) {
-    if (!m_androidRelay || !m_topology || !m_options.topologyRuntimeEnabled) {
+    if (!m_options.topologyRuntimeEnabled) {
         return;
     }
 
@@ -625,14 +628,36 @@ void ClientRuntime::StartLocalAndroidInputBridge(const ScreenSize& screenSize) {
     }
 
     if (m_options.androidCaptureBackend == "libei") {
+        if (!m_topology) {
+            if (!m_androidRelay) {
+                std::cerr << "WARN: libei local capture needs topology_file or Android relay; local capture disabled." << std::endl;
+                return;
+            }
+            std::cout << "[ANDROID] Topology file is not loaded; enabling libei right-edge Android handoff." << std::endl;
+        }
         LibeiInputCaptureBridgeOptions options;
         options.desktopWidth = screenSize.width;
         options.desktopHeight = screenSize.height;
+        options.topology = m_topology;
+        options.localMachineName = m_options.localMachineName;
+        options.androidPeerName = m_options.androidRelay.peerName;
         options.sendMouse = [this](const MouseData& mouse) {
             return TrySendAndroidMouse(mouse);
         };
+        options.sendMouseToMachine = [this](const MouseData& mouse, const std::string& targetMachineId) {
+            if (targetMachineId == m_options.androidRelay.peerName) {
+                return TrySetAndroidControlActive(true) && TrySendAndroidMouse(mouse);
+            }
+            return m_options.powerToysCompatibilityEnabled && m_network && m_network->SendMouse(mouse);
+        };
         options.sendKeyboard = [this](const KeyboardData& keyboard) {
             return TrySendAndroidKeyboard(keyboard);
+        };
+        options.sendKeyboardToMachine = [this](const KeyboardData& keyboard, const std::string& targetMachineId) {
+            if (targetMachineId == m_options.androidRelay.peerName) {
+                return TrySendAndroidKeyboard(keyboard);
+            }
+            return m_options.powerToysCompatibilityEnabled && m_network && m_network->SendKeyboard(keyboard);
         };
         options.sendGesture = [this](const std::string& kind, double dx, double dy) {
             return TrySendAndroidGesture(kind, dx, dy);
@@ -640,8 +665,20 @@ void ClientRuntime::StartLocalAndroidInputBridge(const ScreenSize& screenSize) {
         options.sendControl = [this](bool active) {
             return TrySetAndroidControlActive(active);
         };
+        options.sendControlForMachine = [this](bool active, const std::string& targetMachineId) {
+            if (targetMachineId == m_options.androidRelay.peerName) {
+                return TrySetAndroidControlActive(active);
+            }
+            return true;
+        };
         m_libeiInputCaptureBridge = std::make_unique<LibeiInputCaptureBridge>(std::move(options));
         m_libeiInputCaptureBridge->Start();
+        return;
+    }
+
+    if (!m_topology) {
+        std::cerr << "WARN: Android local handoff requires a topology file for android_capture_backend="
+                  << m_options.androidCaptureBackend << "." << std::endl;
         return;
     }
 

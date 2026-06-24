@@ -1118,6 +1118,16 @@ bool ExternalCommandClipboardBackend::WritePayload(const ClipboardPayload& paylo
         return runWriteBytesCommand(cmd, payload.image->bytes);
     }
 
+    // Plain text is authoritative. Writing the default (untyped) clipboard
+    // offers text/plain, which is what most apps and pastes expect. Writing an
+    // html-only target instead (as we used to) made every rich copy paste as
+    // markup and desynced the echo-suppression cache, producing duplicate
+    // text+html clipboard entries and re-send loops. Only fall back to html
+    // when there is no plain-text representation at all.
+    if (payload.plainText && !payload.plainText->empty()) {
+        return runWriteCommand(m_writeCommand, *payload.plainText);
+    }
+
     if (payload.html && payload.html->fragment && !payload.html->fragment->empty()) {
         if (m_name.find("wl-clipboard") != std::string::npos) {
             CommandSpec htmlCmd = m_writeCommand;

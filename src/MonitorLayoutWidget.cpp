@@ -1,9 +1,12 @@
 #include "MonitorLayoutWidget.h"
 #include "AppConfig.h"
+#include "AppState.h"
 #include "TopologyModel.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -16,6 +19,59 @@ constexpr double kPad        = 8.0;
 constexpr double kRadius     = 6.0;
 constexpr double kLocalR     = 0.10, kLocalG  = 0.40, kLocalB  = 0.75;  // blue
 constexpr double kRemoteR    = 0.23, kRemoteG = 0.30, kRemoteB = 0.38;  // slate
+
+bool HasMachine(const MonitorLayoutWidget* mlw, const std::string& id) {
+    return std::any_of(mlw->machines.begin(), mlw->machines.end(),
+        [&](const LayoutMachine& machine) { return machine.id == id; });
+}
+
+void AppendMachine(
+    MonitorLayoutWidget* mlw,
+    const std::string& id,
+    const std::string& label,
+    bool isLocal,
+    double& nextX,
+    double width = 192.0,
+    double height = 120.0) {
+    if (id.empty() || HasMachine(mlw, id)) {
+        return;
+    }
+
+    LayoutMachine machine;
+    machine.id = id;
+    machine.label = label.empty() ? id : label;
+    machine.isLocal = isLocal;
+    machine.x = nextX;
+    machine.y = kGridStep;
+    machine.w = width;
+    machine.h = height;
+    nextX += machine.w + kGridStep;
+    mlw->machines.push_back(machine);
+}
+
+bool IsAndroidMachine(const LayoutMachine& machine, const AppConfig& cfg) {
+    return machine.id == "android" || (!cfg.androidPeerName.empty() && machine.id == cfg.androidPeerName);
+}
+
+int DisplayWidthForMachine(const LayoutMachine& machine, const AppConfig& cfg) {
+    if (machine.isLocal && cfg.screenWidth.has_value()) {
+        return *cfg.screenWidth;
+    }
+    if (IsAndroidMachine(machine, cfg)) {
+        return cfg.androidDeviceWidth;
+    }
+    return 1920;
+}
+
+int DisplayHeightForMachine(const LayoutMachine& machine, const AppConfig& cfg) {
+    if (machine.isLocal && cfg.screenHeight.has_value()) {
+        return *cfg.screenHeight;
+    }
+    if (IsAndroidMachine(machine, cfg)) {
+        return cfg.androidDeviceHeight;
+    }
+    return 1080;
+}
 
 void RoundedRect(cairo_t* cr, double x, double y, double w, double h, double r) {
     cairo_new_sub_path(cr);
@@ -144,52 +200,76 @@ void PopulateFromConfig(MonitorLayoutWidget* mlw, const AppConfig& cfg) {
     const auto& displays = topo.displays();
 
     if (machines.empty()) {
-        // No topology — add two placeholder machines
-        LayoutMachine local;
-        local.id      = "linux";
-        local.label   = cfg.machineName.empty() ? "This PC" : cfg.machineName;
-        local.isLocal = true;
-        local.x = kGridStep; local.y = kGridStep;
-        local.w = 192; local.h = 120;
-        mlw->machines.push_back(local);
+        double nextX = kGridStep;
+        const std::string localId = cfg.machineName.empty() ? "linux" : cfg.machineName;
+        AppendMachine(mlw, localId, cfg.machineName.empty() ? "This PC" : cfg.machineName, true, nextX);
+
+        AppState state;
+        std::string stateErr;
+        if (LoadAppState(DefaultStatePath(), state, stateErr)) {
+            auto peers = state.peers;
+            std::sort(peers.begin(), peers.end(), [](const PeerState& a, const PeerState& b) {
+                if (a.connectedNow != b.connectedNow) return a.connectedNow > b.connectedNow;
+                return a.lastConnectedEpochSeconds > b.lastConnectedEpochSeconds;
+            });
+            for (const auto& peer : peers) {
+                if (!peer.approved && !peer.connectedNow) continue;
+                const std::string id = peer.name.empty() ? peer.host : peer.name;
+                if (id.empty() || id == localId) continue;
+                AppendMachine(mlw, id, id, false, nextX);
+            }
+        }
 
         if (cfg.androidPeersEnabled) {
-            LayoutMachine android;
-            android.id    = "android";
-            android.label = cfg.androidPeerName.empty() ? "Android" : cfg.androidPeerName;
-            android.x = kGridStep + 192 + kGridStep;
-            android.y = kGridStep;
-            android.w = 128; android.h = 120;
-            mlw->machines.push_back(android);
+            const std::string androidId = cfg.androidPeerName.empty() ? "android" : cfg.androidPeerName;
+            AppendMachine(mlw, androidId, androidId, false, nextX, 128.0, 120.0);
         }
         return;
     }
 
-    // Map machine ID → first display for position
-    double offsetX = kGridStep;
+    bool haveGlobal = false;
+    int globalMinX = 0;
+    int globalMinY = 0;
+    for (const auto& disp : displays) {
+        if (!haveGlobal) {
+            globalMinX = disp.x;
+            globalMinY = disp.y;
+            haveGlobal = true;
+        } else {
+            globalMinX = std::min(globalMinX, disp.x);
+            globalMinY = std::min(globalMinY, disp.y);
+        }
+    }
+
     for (const auto& mach : machines) {
         LayoutMachine lm;
         lm.id    = mach.id;
         lm.label = mach.id;
 
-        // Sum display widths/heights for bounding box
-        int maxW = 0, maxH = 0;
-        int baseX = 0, baseY = 0;
+        int minX = 0, minY = 0, maxX = 1920, maxY = 1080;
         bool first = true;
         for (const auto& disp : displays) {
             if (disp.machineId != mach.id) continue;
-            if (first) { baseX = disp.x; baseY = disp.y; first = false; }
-            maxW = std::max(maxW, disp.x - baseX + disp.width);
-            maxH = std::max(maxH, disp.y - baseY + disp.height);
+            if (first) {
+                minX = disp.x;
+                minY = disp.y;
+                maxX = disp.x + disp.width;
+                maxY = disp.y + disp.height;
+                first = false;
+            } else {
+                minX = std::min(minX, disp.x);
+                minY = std::min(minY, disp.y);
+                maxX = std::max(maxX, disp.x + disp.width);
+                maxY = std::max(maxY, disp.y + disp.height);
+            }
         }
 
         const double scale = 0.1;
-        lm.w = std::max(96.0, maxW * scale);
-        lm.h = std::max(60.0, maxH * scale);
-        lm.x = offsetX;
-        lm.y = kGridStep;
+        lm.w = std::max(96.0, (maxX - minX) * scale);
+        lm.h = std::max(60.0, (maxY - minY) * scale);
+        lm.x = kGridStep + (minX - globalMinX) * scale;
+        lm.y = kGridStep + (minY - globalMinY) * scale;
         lm.isLocal = (mach.id == "linux" || (!cfg.machineName.empty() && mach.id == cfg.machineName));
-        offsetX += lm.w + kGridStep;
         mlw->machines.push_back(lm);
     }
 }
@@ -197,26 +277,34 @@ void PopulateFromConfig(MonitorLayoutWidget* mlw, const AppConfig& cfg) {
 // Build a minimal topology INI string from current machine positions
 std::string BuildTopologyIni(const MonitorLayoutWidget* mlw, const AppConfig& cfg) {
     std::ostringstream oss;
-    oss << "[wrap]\nmode=none\n\n";
+    oss << "wrap=none\n";
 
     for (const auto& m : mlw->machines) {
-        oss << "[machine]\nid=" << m.id << "\n\n";
+        oss << "machine=" << m.id << "\n";
     }
+    oss << "\n";
+
+    const LayoutMachine* local = nullptr;
+    for (const auto& m : mlw->machines) {
+        if (m.isLocal) {
+            local = &m;
+            break;
+        }
+    }
+    const double originX = local ? local->x : 0.0;
+    const double originY = local ? local->y : 0.0;
 
     // Compute pixel coordinates (scale canvas back to screen space)
-    // Use a nominal 1920 width for the local machine
     const double scale = 10.0;  // 0.1 scale used in PopulateFromConfig
     for (const auto& m : mlw->machines) {
-        const int px = static_cast<int>(m.x * scale);
-        const int py = static_cast<int>(m.y * scale);
-        const int pw = m.isLocal ? 1920 : cfg.androidDeviceWidth;
-        const int ph = m.isLocal ? 1080 : cfg.androidDeviceHeight;
-        oss << "[display]\n"
-            << "id=" << m.id << "-1\n"
-            << "machine=" << m.id << "\n"
-            << "x=" << px << "\ny=" << py << "\n"
-            << "width=" << pw << "\nheight=" << ph << "\n\n";
+        const int px = static_cast<int>((m.x - originX) * scale);
+        const int py = static_cast<int>((m.y - originY) * scale);
+        const int pw = DisplayWidthForMachine(m, cfg);
+        const int ph = DisplayHeightForMachine(m, cfg);
+        oss << "display=" << m.id << "-1," << m.id << ","
+            << px << "," << py << "," << pw << "," << ph << "\n";
     }
+    oss << "\n";
 
     // Add links between adjacent machines (sharing an edge within tolerance)
     const double tol = kGridStep * 2;
@@ -227,26 +315,20 @@ std::string BuildTopologyIni(const MonitorLayoutWidget* mlw, const AppConfig& cf
             // b is to the right of a
             if (std::abs((a.x + a.w) - b.x) < tol &&
                 std::abs(a.y - b.y) < tol) {
-                oss << "[link]\nsource=" << a.id << "-1\nexit=right\n"
-                    << "target=" << b.id << "-1\nentry=left\n\n";
-                oss << "[link]\nsource=" << b.id << "-1\nexit=left\n"
-                    << "target=" << a.id << "-1\nentry=right\n\n";
+                oss << "link=" << a.id << "-1,right," << b.id << "-1,left\n";
+                oss << "link=" << b.id << "-1,left," << a.id << "-1,right\n";
             }
             // b is to the left of a
             if (std::abs((b.x + b.w) - a.x) < tol &&
                 std::abs(a.y - b.y) < tol) {
-                oss << "[link]\nsource=" << b.id << "-1\nexit=right\n"
-                    << "target=" << a.id << "-1\nentry=left\n\n";
-                oss << "[link]\nsource=" << a.id << "-1\nexit=left\n"
-                    << "target=" << b.id << "-1\nentry=right\n\n";
+                oss << "link=" << b.id << "-1,right," << a.id << "-1,left\n";
+                oss << "link=" << a.id << "-1,left," << b.id << "-1,right\n";
             }
             // b is below a
             if (std::abs((a.y + a.h) - b.y) < tol &&
                 std::abs(a.x - b.x) < tol) {
-                oss << "[link]\nsource=" << a.id << "-1\nexit=down\n"
-                    << "target=" << b.id << "-1\nentry=up\n\n";
-                oss << "[link]\nsource=" << b.id << "-1\nexit=up\n"
-                    << "target=" << a.id << "-1\nentry=down\n\n";
+                oss << "link=" << a.id << "-1,down," << b.id << "-1,up\n";
+                oss << "link=" << b.id << "-1,up," << a.id << "-1,down\n";
             }
         }
     }
@@ -256,9 +338,10 @@ std::string BuildTopologyIni(const MonitorLayoutWidget* mlw, const AppConfig& cf
 
 } // namespace
 
-MonitorLayoutWidget* CreateMonitorLayoutWidget(const AppConfig& cfg) {
+MonitorLayoutWidget* CreateMonitorLayoutWidget(const AppConfig& cfg, const std::string& configPath) {
     auto* mlw = new MonitorLayoutWidget();
-    mlw->configPath = cfg.topologyFile;
+    mlw->configPath = configPath;
+    mlw->topologyPath = cfg.topologyFile;
 
     PopulateFromConfig(mlw, cfg);
 
@@ -290,13 +373,20 @@ void MonitorLayoutWidgetApply(GtkButton*, gpointer data) {
     const std::string ini = BuildTopologyIni(mlw, cfg);
 
     // Write to topology file (use config path parent / topology.ini if not set)
-    std::string topoPath = cfg.topologyFile;
+    std::string topoPath = cfg.topologyFile.empty() ? mlw->topologyPath : cfg.topologyFile;
     if (topoPath.empty()) {
         topoPath = std::filesystem::path(mlw->configPath).parent_path() / "topology.ini";
         cfg.topologyFile = topoPath;
-        (void)WriteAppConfig(mlw->configPath, cfg, &err);
     }
+    cfg.topologyRuntimeEnabled = true;
+    cfg.topologyFile = topoPath;
+    mlw->topologyPath = topoPath;
+    (void)WriteAppConfig(mlw->configPath, cfg, &err);
 
+    const auto topoParent = std::filesystem::path(topoPath).parent_path();
+    if (!topoParent.empty()) {
+        std::filesystem::create_directories(topoParent);
+    }
     std::ofstream f(topoPath);
     if (f) f << ini;
 }

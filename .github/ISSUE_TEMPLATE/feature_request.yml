@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest a capability or improvement for InputFlow
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping shape InputFlow. Please describe the outcome you want,
+        not just an implementation.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What are you trying to do, and where does the current behavior fall short?
+      placeholder: "When my Windows host changes IP, I have to…"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like InputFlow to do?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Linux client / input
+        - Clipboard
+        - Reconnect / discovery
+        - Tray / dashboard UI
+        - Android peer
+        - Packaging / docs
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches or workarounds you've tried or thought about.
+    validations:
+      required: false

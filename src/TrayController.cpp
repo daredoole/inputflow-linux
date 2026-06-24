@@ -4,12 +4,15 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <sys/file.h>
@@ -17,12 +20,16 @@
 #include <unistd.h>
 #include <vector>
 
-#ifdef MWB_HAVE_GTK_GUI
-#include "TrayController.h"
-#include "GuiMainWindow.h"
+// Data/runtime headers are GTK-free and are referenced by helper functions
+// that live outside the GUI guard, so they must be included unconditionally.
 #include "AppConfig.h"
 #include "AppState.h"
 #include "ClientRuntime.h"
+#include "PeerRecovery.h"
+
+#ifdef MWB_HAVE_GTK_GUI
+#include "TrayController.h"
+#include "GuiMainWindow.h"
 #endif
 
 namespace {
@@ -84,6 +91,29 @@ std::optional<std::string> RunCommandCapture(const std::string& command) {
         output.pop_back();
     }
     return output;
+}
+
+std::int64_t CurrentEpochSeconds() {
+    return std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+void SaveStateOrLog(const std::string& statePath, const mwb::AppState& state) {
+    std::string error;
+    if (!mwb::SaveAppState(statePath, state, error)) {
+        std::cerr << "WARN: Failed to save state " << statePath << ": " << error << std::endl;
+    }
+}
+
+// Lock the local desktop session. Tries logind first (works headless and on
+// most modern desktops), then falls back to common screen lockers.
+void LockLocalSession() {
+    if (std::system("loginctl lock-session >/dev/null 2>&1") == 0) {
+        return;
+    }
+    (void)std::system("(loginctl lock-sessions || xdg-screensaver lock || "
+                      "qdbus org.freedesktop.ScreenSaver /ScreenSaver Lock) >/dev/null 2>&1");
 }
 
 bool SpawnAsync(const std::vector<std::string>& argv) {
@@ -603,6 +633,10 @@ void OnOpenMonitorLayout(GtkMenuItem*, gpointer userData) {
 #endif
 }
 
+void OnLockScreen(GtkMenuItem*, gpointer) {
+    LockLocalSession();
+}
+
 void OnQuit(GtkMenuItem*, gpointer userData) {
 #ifdef MWB_HAVE_GTK_GUI
     auto* context = static_cast<TrayContext*>(userData);
@@ -659,6 +693,7 @@ void BuildTrayMenu(TrayContext& context) {
     context.trayHelpItem              = AddMenuItem(menu, "Tray Visibility Help",    G_CALLBACK(OnShowTrayHelp),          &context);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+    AddMenuItem(menu, "Lock Screen", G_CALLBACK(OnLockScreen), &context);
     AddMenuItem(menu, "Quit", G_CALLBACK(OnQuit), &context);
     gtk_widget_show_all(menu);
 
@@ -781,9 +816,25 @@ int RunTrayAndGui(const std::string& binary,
     // Start daemon runtime in background thread
     AppConfig runtimeConfig = config;
     std::thread daemonThread([&]() {
-        // Minimal state/option wiring (mirrors RunClient in main.cpp)
         AppState state;
+        if (std::filesystem::exists(statePath)) {
+            std::string error;
+            if (!LoadAppState(statePath, state, error)) {
+                std::cerr << "WARN: Failed to load state " << statePath << ": " << error << std::endl;
+            }
+        }
+        ClearConnectedPeers(state);
         (void)EnsureLocalMachineId(state);
+        SaveStateOrLog(statePath, state);
+
+        if (PowerToysCompatibilityEnabled(runtimeConfig.connectionMode)) {
+            if (const auto recoveredHost = RecoverConfiguredHostFromKnownPeers(runtimeConfig, state);
+                recoveredHost.has_value()) {
+                runtimeConfig.host = *recoveredHost;
+            }
+        }
+
+        std::mutex stateMutex;
 
         RuntimeOptions options;
         options.host                   = runtimeConfig.host;
@@ -818,7 +869,12 @@ int RunTrayAndGui(const std::string& binary,
         options.androidRelay.androidDeviceHeight = runtimeConfig.androidDeviceHeight;
 
         options.onSessionEstablished = [&](const std::string& host, int port,
-                                           const std::string& remoteName, uint32_t, uint32_t) {
+                                           const std::string& remoteName, uint32_t, uint32_t localMachineId) {
+            {
+                std::lock_guard<std::mutex> lock(stateMutex);
+                MarkSessionEstablished(state, host, port, remoteName, localMachineId, CurrentEpochSeconds());
+                SaveStateOrLog(statePath, state);
+            }
             PostStatus(&context, mainWin, "active", host + ":" + std::to_string(port) + " (" + remoteName + ")");
             if (mainWin) {
                 auto* logMsg = new std::string("Connected to " + host + ":" + std::to_string(port));
@@ -831,8 +887,31 @@ int RunTrayAndGui(const std::string& binary,
             }
         };
         options.onSessionDisconnected = [&]() {
+            {
+                std::lock_guard<std::mutex> lock(stateMutex);
+                MarkSessionDisconnected(state);
+                SaveStateOrLog(statePath, state);
+            }
             PostStatus(&context, mainWin, "inactive", "Disconnected");
+            if (runtimeConfig.lockOnDisconnect) {
+                std::cout << "[SECURITY] Controlling peer disconnected; locking local session." << std::endl;
+                LockLocalSession();
+            }
         };
+
+        // Self-healing reconnect: when the peer stops responding at its
+        // last-known address, the network layer asks this resolver for a fresh
+        // address. We re-run name-based LAN discovery against the ORIGINAL
+        // configured host (config, not runtimeConfig — the latter was already
+        // overwritten with the startup-resolved IP), so a peer that changed its
+        // DHCP lease is rediscovered without restarting the daemon.
+        if (PowerToysCompatibilityEnabled(runtimeConfig.connectionMode)) {
+            const AppConfig resolverConfig = config;
+            options.resolveHost = [resolverConfig, &state, &stateMutex]() -> std::optional<std::string> {
+                std::lock_guard<std::mutex> lock(stateMutex);
+                return RecoverConfiguredHostFromKnownPeers(resolverConfig, state);
+            };
+        }
 
         ClientRuntime runtime(std::move(options));
 

@@ -51,6 +51,9 @@ struct RuntimeOptions {
     AndroidRelayOptions androidRelay;
     std::function<void(const std::string&, int, const std::string&, uint32_t, uint32_t)> onSessionEstablished;
     std::function<void()> onSessionDisconnected;
+    // Re-resolves the peer address when reconnect attempts stall (returns a
+    // fresh host/IP via discovery, or std::nullopt if none is better).
+    std::function<std::optional<std::string>()> resolveHost;
 };
 
 class ClientRuntime {

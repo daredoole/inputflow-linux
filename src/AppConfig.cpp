@@ -151,6 +151,22 @@ bool InputFlowPeersEnabled(ConnectionMode mode) {
     return mode == ConnectionMode::InputFlow || mode == ConnectionMode::Hybrid;
 }
 
+bool IsStrongRelaySecret(std::string_view secret) {
+    if (secret.size() < kMinRelaySecretLength) {
+        return false;
+    }
+    // Require at least some variety so a long run of one character does not pass.
+    std::size_t distinct = 0;
+    bool seen[256] = {false};
+    for (unsigned char ch : secret) {
+        if (!seen[ch]) {
+            seen[ch] = true;
+            ++distinct;
+        }
+    }
+    return distinct >= 8;
+}
+
 std::optional<bool> ParseConfigBool(std::string_view value) {
     const std::string lowered = ToLower(Trim(value));
     if (lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on") {
@@ -324,6 +340,16 @@ bool ParseAppConfig(std::string_view text, AppConfig& outConfig, std::string* er
                 return false;
             }
             outConfig.autoConnectEnabled = *parsed;
+            continue;
+        }
+
+        if (key == "lock_on_disconnect") {
+            const auto parsed = ParseConfigBool(value);
+            if (!parsed.has_value()) {
+                SetError(errorMessage, "Config key 'lock_on_disconnect' expects true/false.");
+                return false;
+            }
+            outConfig.lockOnDisconnect = *parsed;
             continue;
         }
 
@@ -524,6 +550,7 @@ std::string RenderAppConfig(const AppConfig& config) {
     out << "clipboard_force_poll=" << RenderBool(config.clipboardForcePoll) << '\n';
     out << "clipboard_poll_ms=" << config.clipboardPollMs << '\n';
     out << "auto_connect_enabled=" << RenderBool(config.autoConnectEnabled) << '\n';
+    out << "lock_on_disconnect=" << RenderBool(config.lockOnDisconnect) << '\n';
     out << "reconnect_initial_backoff_ms=" << config.reconnectInitialBackoffMs << '\n';
     out << "reconnect_max_backoff_ms=" << config.reconnectMaxBackoffMs << '\n';
     out << "reconnect_idle_retry_ms=" << config.reconnectIdleRetryMs << '\n';
@@ -557,7 +584,7 @@ std::string RenderSampleAppConfig() {
     AppConfig sample = LoadDefaultAppConfig();
     sample.host = "192.0.2.10";
     sample.keyFile = "security-key";
-    sample.machineName = "fedora";
+    sample.machineName = "linux-desktop";
 
     std::ostringstream out;
     out << "# InputFlow Linux client config.\n";

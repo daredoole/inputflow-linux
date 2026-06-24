@@ -3,6 +3,16 @@
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cctype>
+#include <cerrno>
+#include <cstdint>
+#include <fcntl.h>
+#include <iostream>
+#include <limits>
+#include <netdb.h>
+#include <optional>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 namespace mwb {
 
@@ -29,6 +39,87 @@ std::string ToLowerCopy(std::string_view value) {
         lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
     }
     return lowered;
+}
+
+bool SetNonBlocking(int fd) {
+    const int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) {
+        return false;
+    }
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+}
+
+std::optional<std::string> ProbeReachableIpv4Host(const std::string& host, int port, int timeoutMs) {
+    if (host.empty() || port <= 0 || port > std::numeric_limits<uint16_t>::max()) {
+        return std::nullopt;
+    }
+
+    struct addrinfo hints {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    const std::string service = std::to_string(port);
+    struct addrinfo* results = nullptr;
+    if (getaddrinfo(host.c_str(), service.c_str(), &hints, &results) != 0 || results == nullptr) {
+        return std::nullopt;
+    }
+
+    std::optional<std::string> reachableIp;
+    for (const struct addrinfo* current = results; current != nullptr; current = current->ai_next) {
+        if (current->ai_family != AF_INET || current->ai_addr == nullptr) {
+            continue;
+        }
+
+        const auto* address = reinterpret_cast<const sockaddr_in*>(current->ai_addr);
+        char buffer[INET_ADDRSTRLEN] = {};
+        if (inet_ntop(AF_INET, &address->sin_addr, buffer, sizeof(buffer)) == nullptr) {
+            continue;
+        }
+
+        int fd = socket(current->ai_family, current->ai_socktype, current->ai_protocol);
+        if (fd < 0) {
+            continue;
+        }
+
+        if (!SetNonBlocking(fd)) {
+            close(fd);
+            continue;
+        }
+
+        const int connectResult = connect(fd, current->ai_addr, current->ai_addrlen);
+        if (connectResult == 0) {
+            reachableIp = std::string(buffer);
+            close(fd);
+            break;
+        }
+
+        if (errno != EINPROGRESS && errno != EINTR) {
+            close(fd);
+            continue;
+        }
+
+        struct pollfd descriptor {};
+        descriptor.fd = fd;
+        descriptor.events = POLLOUT;
+
+        const int pollResult = poll(&descriptor, 1, timeoutMs);
+        if (pollResult > 0) {
+            int socketError = 0;
+            socklen_t socketErrorLength = sizeof(socketError);
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &socketErrorLength) == 0 &&
+                socketError == 0) {
+                reachableIp = std::string(buffer);
+                close(fd);
+                break;
+            }
+        }
+
+        close(fd);
+    }
+
+    freeaddrinfo(results);
+    return reachableIp;
 }
 
 } // namespace
@@ -208,6 +299,94 @@ std::vector<std::string> CollectRecoveryDiscoveredHosts(const AppState& state,
     }
 
     return hosts;
+}
+
+std::optional<std::string> RecoverConfiguredHostFromKnownPeers(const AppConfig& config,
+                                                               const AppState& state) {
+    const bool configuredHostIsIpv4 = IsIpv4Literal(config.host);
+    const auto knownPeerHosts = CollectRecoveryCandidateHosts(state, config.host, config.port);
+    for (const auto& host : knownPeerHosts) {
+        if (auto reachable = ProbeReachableIpv4Host(host, config.port, 250)) {
+            std::cout << "[RECOVERY] Configured peer " << config.host
+                      << " has a verified same-name address "
+                      << *reachable;
+            if (configuredHostIsIpv4) {
+                std::cout << "; using name-priority recovery before trusting the configured IP";
+            } else {
+                std::cout << "; reusing verified peer address";
+            }
+            std::cout << std::endl;
+            return reachable;
+        }
+    }
+
+    if (configuredHostIsIpv4 && ProbeReachableIpv4Host(config.host, config.port, 200).has_value()) {
+        return std::nullopt;
+    }
+
+    DiscoveryOptions discoveryOptions;
+    discoveryOptions.port = static_cast<uint16_t>(config.port);
+    discoveryOptions.connectTimeoutMs = 200;
+    discoveryOptions.maxHostsPerSubnet = 256;
+    const auto candidates = DiscoverLanCandidates(discoveryOptions);
+    if (!IsIpv4Literal(config.host)) {
+        for (const auto& candidate : candidates) {
+            if (candidate.status != DiscoveryStatus::Open ||
+                candidate.hostName.empty() ||
+                !IsIpv4Literal(candidate.ipAddress) ||
+                !HostLabelsMatch(candidate.hostName, config.host)) {
+                continue;
+            }
+            std::cout << "[RECOVERY] Configured peer " << config.host
+                      << " resolved by LAN discovery to "
+                      << candidate.ipAddress << " (name=" << candidate.hostName << ")" << std::endl;
+            return candidate.ipAddress;
+        }
+    }
+    for (const auto& host : CollectRecoveryDiscoveredHosts(state, config.host, config.port, candidates)) {
+        std::cout << "[RECOVERY] Configured peer " << config.host
+                  << " is unavailable; using discovered address "
+                  << host << " for the approved peer name" << std::endl;
+        return host;
+    }
+
+    // Final fallback for IPv4-literal configs whose address went stale and has
+    // no peer record tied to that exact IP: match ANY approved, named peer
+    // against live discovery, preferring the most recently connected one. This
+    // recovers the common case where the user hardcoded a Windows host IP, the
+    // peer moved (DHCP), and the only link is the approved peer's name.
+    // Only act when there is exactly ONE approved named peer for this port: a
+    // bare stale IP does not identify which peer was intended, so guessing among
+    // several risks handing input to the wrong machine. The single-peer case is
+    // unambiguous and safe.
+    if (configuredHostIsIpv4) {
+        const PeerState* solePeer = nullptr;
+        std::size_t approvedCount = 0;
+        for (const auto& peer : state.peers) {
+            if (peer.approved && peer.port == config.port && !peer.name.empty()) {
+                ++approvedCount;
+                solePeer = &peer;
+            }
+        }
+        if (approvedCount == 1 && solePeer != nullptr) {
+            for (const auto& candidate : candidates) {
+                if (candidate.status != DiscoveryStatus::Open ||
+                    candidate.hostName.empty() ||
+                    !IsIpv4Literal(candidate.ipAddress) ||
+                    candidate.ipAddress == config.host) {
+                    continue;
+                }
+                if (HostLabelsMatch(candidate.hostName, solePeer->name)) {
+                    std::cout << "[RECOVERY] Stale configured IP " << config.host
+                              << " is unreachable; sole approved peer '" << solePeer->name
+                              << "' rediscovered at " << candidate.ipAddress << std::endl;
+                    return candidate.ipAddress;
+                }
+            }
+        }
+    }
+
+    return std::nullopt;
 }
 
 } // namespace mwb
