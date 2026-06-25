@@ -163,6 +163,13 @@ object InjectorManager {
         return n.handleKeyboard(frame)
     }
 
+    /** Native continuous scroll for 2-finger trackpad gestures. */
+    fun handleScroll(frame: JSONObject): Boolean {
+        val n = native ?: return false
+        n.scrollBy(frame.optDouble("dx", 0.0).toFloat(), frame.optDouble("dy", 0.0).toFloat())
+        return true
+    }
+
     private fun sensitivity(context: Context): Float {
         val prefs = context.getSharedPreferences(RelayForegroundService.PREFS, Context.MODE_PRIVATE)
         return prefs.getFloat(SettingsActivity.KEY_SENSITIVITY, 1.0f).coerceIn(0.5f, 3.0f)

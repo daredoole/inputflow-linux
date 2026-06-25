@@ -27,6 +27,10 @@ object VkMap {
         put(0x27, KeyEvent.KEYCODE_DPAD_RIGHT)
         put(0x28, KeyEvent.KEYCODE_DPAD_DOWN)
         put(0x2E, KeyEvent.KEYCODE_FORWARD_DEL)
+        put(0x2D, KeyEvent.KEYCODE_INSERT)
+        put(0x14, KeyEvent.KEYCODE_CAPS_LOCK)
+        // Function keys F1-F12 (VK 0x70-0x7B → KEYCODE_F1..F12)
+        for (i in 0..11) put(0x70 + i, KeyEvent.KEYCODE_F1 + i)
         put(0x5B, KeyEvent.KEYCODE_META_LEFT)
         put(0x5C, KeyEvent.KEYCODE_META_RIGHT)
         // OEM punctuation

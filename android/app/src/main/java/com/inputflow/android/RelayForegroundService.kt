@@ -99,6 +99,52 @@ class RelayForegroundService : Service() {
         worker = Thread({ relayLoop() }, "inputflow-relay").also { it.start() }
     }
 
+    private fun dispatchFrame(frame: JSONObject, prefs: android.content.SharedPreferences) {
+        when (frame.optString("type")) {
+            "control" -> setRemoteControlActive(frame.optBoolean("active", false))
+            "mouse" -> if (remoteControlActive) {
+                // Prefer native injection (Shizuku/root); fall back to accessibility.
+                if (!InjectorManager.handleMouse(frame)) {
+                    val accessibility = InputFlowAccessibilityService.instance
+                    if (accessibility != null) {
+                        deliveredMouseFrames += 1
+                        accessibility.handleMouse(frame)
+                    } else {
+                        if (droppedMouseFrames < 5) {
+                            Log.w(TAG, "mouse frame dropped: no injector active")
+                        }
+                        droppedMouseFrames += 1
+                    }
+                }
+            }
+            "keyboard" -> {
+                val cb = keyCaptureCallback
+                if (cb != null) {
+                    cb(frame.optInt("vkCode"), frame.optInt("flags"))
+                } else if (remoteControlActive) {
+                    val accessibility = InputFlowAccessibilityService.instance
+                    if (accessibility?.handleMappedKeyboard(frame) == true) {
+                        // handled by a user-defined key mapping
+                    } else if (InjectorManager.handleKeyboard(frame)) {
+                        // injected natively (Shizuku/root)
+                    } else {
+                        val laptopTypingEnabled = prefs.getBoolean(KEY_LAPTOP_TYPING_ENABLED, false)
+                        if (!laptopTypingEnabled || InputFlowImeService.instance?.handleKeyboard(frame) != true) {
+                            accessibility?.handleKeyboard(frame)
+                        }
+                    }
+                }
+            }
+            "gesture" -> if (remoteControlActive) {
+                // Native continuous scroll when available; richer gestures via accessibility.
+                if (frame.optString("kind") != "scroll" || !InjectorManager.handleScroll(frame)) {
+                    InputFlowAccessibilityService.instance?.handleGesture(frame)
+                }
+            }
+            "devices_info" -> handleDevicesInfo(frame)
+        }
+    }
+
     private fun relayLoop() {
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         while (running.get()) {
@@ -131,47 +177,26 @@ class RelayForegroundService : Service() {
                     startRelayForeground("Connected to $host:$port")
                     broadcastStatus(STATE_CONNECTED, "$host:$port")
                     while (running.get()) {
-                        val frame = RelayProtocol.readFrame(streams.first)
-                        when (frame.optString("type")) {
-                            "control" -> setRemoteControlActive(frame.optBoolean("active", false))
-                            "mouse" -> if (remoteControlActive) {
-                                // Prefer native injection (Shizuku/root); fall back to accessibility.
-                                if (!InjectorManager.handleMouse(frame)) {
-                                    val accessibility = InputFlowAccessibilityService.instance
-                                    if (accessibility != null) {
-                                        deliveredMouseFrames += 1
-                                        accessibility.handleMouse(frame)
-                                    } else {
-                                        if (droppedMouseFrames < 5) {
-                                            Log.w(TAG, "mouse frame dropped: no injector active")
-                                        }
-                                        droppedMouseFrames += 1
-                                    }
-                                }
+                        var frame = RelayProtocol.readFrame(streams.first)
+                        // Collapse a backlog of mouse-move frames to the newest so the
+                        // cursor tracks live with no lag under load. Non-move frames are
+                        // dispatched in order; only intermediate moves are dropped.
+                        while (frame.optString("type") == "mouse" &&
+                            frame.optInt("wParam") == WM_MOUSEMOVE &&
+                            streams.first.available() > 4
+                        ) {
+                            val next = RelayProtocol.readFrame(streams.first)
+                            if (next.optString("type") == "mouse" &&
+                                next.optInt("wParam") == WM_MOUSEMOVE
+                            ) {
+                                frame = next
+                            } else {
+                                dispatchFrame(frame, prefs)
+                                frame = next
+                                break
                             }
-                            "keyboard" -> {
-                                val cb = keyCaptureCallback
-                                if (cb != null) {
-                                    cb(frame.optInt("vkCode"), frame.optInt("flags"))
-                                } else if (remoteControlActive) {
-                                    val accessibility = InputFlowAccessibilityService.instance
-                                    if (accessibility?.handleMappedKeyboard(frame) == true) {
-                                        // handled by a user-defined key mapping
-                                    } else if (InjectorManager.handleKeyboard(frame)) {
-                                        // injected natively (Shizuku/root)
-                                    } else {
-                                        val laptopTypingEnabled = prefs.getBoolean(KEY_LAPTOP_TYPING_ENABLED, false)
-                                        if (!laptopTypingEnabled || InputFlowImeService.instance?.handleKeyboard(frame) != true) {
-                                            accessibility?.handleKeyboard(frame)
-                                        }
-                                    }
-                                }
-                            }
-                            "gesture" -> if (remoteControlActive) {
-                                InputFlowAccessibilityService.instance?.handleGesture(frame)
-                            }
-                            "devices_info" -> handleDevicesInfo(frame)
                         }
+                        dispatchFrame(frame, prefs)
                     }
                     deactivateRemoteControl()
                 }
@@ -257,6 +282,7 @@ class RelayForegroundService : Service() {
     }
 
     companion object {
+        private const val WM_MOUSEMOVE = 0x0200
         const val PREFS = "inputflow"
         const val KEY_HOST = "host"
         const val KEY_PORT = "port"

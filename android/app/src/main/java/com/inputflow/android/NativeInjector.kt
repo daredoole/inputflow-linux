@@ -62,6 +62,26 @@ class NativeInjector(
         inject(pointerEvent(MotionEvent.ACTION_UP, 0, down, SystemClock.uptimeMillis()))
     }
 
+    /** Continuous trackpad-style scroll at the cursor (native ACTION_SCROLL). */
+    fun scrollBy(dx: Float, dy: Float) {
+        val now = SystemClock.uptimeMillis()
+        val props = MotionEvent.PointerProperties().apply {
+            id = 0; toolType = MotionEvent.TOOL_TYPE_MOUSE
+        }
+        val coords = MotionEvent.PointerCoords().apply {
+            x = px; y = py; pressure = 1f; size = 1f
+            // Android scroll axes: positive vscroll = away/up. Trackpad dy>0 = down.
+            setAxisValue(MotionEvent.AXIS_VSCROLL, -dy / SCROLL_DIVISOR)
+            setAxisValue(MotionEvent.AXIS_HSCROLL, dx / SCROLL_DIVISOR)
+        }
+        val ev = MotionEvent.obtain(
+            now, now, MotionEvent.ACTION_SCROLL, 1,
+            arrayOf(props), arrayOf(coords), 0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_MOUSE, 0)
+        inject(ev)
+        ev.recycle()
+    }
+
     private fun scroll(mouseData: Int) {
         val now = SystemClock.uptimeMillis()
         val props = MotionEvent.PointerProperties().apply {
@@ -130,5 +150,7 @@ class NativeInjector(
         private const val WM_MBUTTONUP = 0x0208
         private const val WM_MOUSEWHEEL = 0x020A
         private const val LLKHF_UP = 0x80
+        // Trackpad pixel-delta → scroll-unit scale; smaller = faster scroll.
+        private const val SCROLL_DIVISOR = 40f
     }
 }
