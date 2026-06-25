@@ -157,6 +157,8 @@ object InjectorManager {
         return n.handleMouse(frame)
     }
 
+    fun hasNativeInjector(): Boolean = native != null
+
     fun handleKeyboard(frame: JSONObject): Boolean {
         val n = native ?: return false
         return n.handleKeyboard(frame)

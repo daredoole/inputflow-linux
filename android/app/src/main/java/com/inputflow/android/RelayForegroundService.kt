@@ -284,7 +284,7 @@ class RelayForegroundService : Service() {
         if (active && accessibility == null) {
             Log.w(TAG, "remote control requested but accessibility service is not active")
         }
-        accessibility?.setRemoteControlActive(active)
+        accessibility?.setRemoteControlActive(active && !InjectorManager.hasNativeInjector())
         if (!active) {
             InputFlowImeService.restorePreviousKeyboard()
         }

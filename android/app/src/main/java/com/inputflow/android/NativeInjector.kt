@@ -23,6 +23,9 @@ class NativeInjector(
     private var py = 0f
     private var primed = false
     private var metaState = 0
+    private var primaryDownTime: Long = 0L
+    private var secondaryDownTime: Long = 0L
+    private var tertiaryDownTime: Long = 0L
 
     fun ping(): Boolean = try { service.ping() } catch (_: Throwable) { false }
 
@@ -47,21 +50,46 @@ class NativeInjector(
                 py = (cy + (baseY - cy) * sens).coerceIn(0f, m.heightPixels - 1f)
                 inject(pointerEvent(MotionEvent.ACTION_HOVER_MOVE, 0))
             }
-            WM_LBUTTONUP -> click(MotionEvent.BUTTON_PRIMARY)
-            WM_RBUTTONUP -> click(MotionEvent.BUTTON_SECONDARY)
-            WM_MBUTTONUP -> click(MotionEvent.BUTTON_TERTIARY)
+            WM_LBUTTONDOWN -> button(MotionEvent.BUTTON_PRIMARY, down = true)
+            WM_LBUTTONUP -> button(MotionEvent.BUTTON_PRIMARY, down = false)
+            WM_RBUTTONDOWN -> button(MotionEvent.BUTTON_SECONDARY, down = true)
+            WM_RBUTTONUP -> button(MotionEvent.BUTTON_SECONDARY, down = false)
+            WM_MBUTTONDOWN -> button(MotionEvent.BUTTON_TERTIARY, down = true)
+            WM_MBUTTONUP -> button(MotionEvent.BUTTON_TERTIARY, down = false)
             WM_MOUSEWHEEL -> scroll(frame.optInt("mouseData"))
             else -> false
         }
     }
 
-    private fun click(button: Int): Boolean {
-        val down = SystemClock.uptimeMillis()
-        val downSent = inject(pointerEvent(MotionEvent.ACTION_DOWN, button, down, down))
-        val pressSent = inject(pointerEvent(MotionEvent.ACTION_BUTTON_PRESS, button, down, down))
-        val releaseSent = inject(pointerEvent(MotionEvent.ACTION_BUTTON_RELEASE, 0, down, SystemClock.uptimeMillis()))
-        val upSent = inject(pointerEvent(MotionEvent.ACTION_UP, 0, down, SystemClock.uptimeMillis()))
-        return downSent && pressSent && releaseSent && upSent
+    private fun button(button: Int, down: Boolean): Boolean {
+        val now = SystemClock.uptimeMillis()
+        return if (down) {
+            setButtonDownTime(button, now)
+            val downSent = inject(pointerEvent(MotionEvent.ACTION_DOWN, button, now, now))
+            val pressSent = inject(pointerEvent(MotionEvent.ACTION_BUTTON_PRESS, button, now, now))
+            downSent && pressSent
+        } else {
+            val downTime = getButtonDownTime(button).takeIf { it != 0L } ?: now
+            setButtonDownTime(button, 0L)
+            val releaseSent = inject(pointerEvent(MotionEvent.ACTION_BUTTON_RELEASE, 0, downTime, now))
+            val upSent = inject(pointerEvent(MotionEvent.ACTION_UP, 0, downTime, now))
+            releaseSent && upSent
+        }
+    }
+
+    private fun getButtonDownTime(button: Int): Long = when (button) {
+        MotionEvent.BUTTON_PRIMARY -> primaryDownTime
+        MotionEvent.BUTTON_SECONDARY -> secondaryDownTime
+        MotionEvent.BUTTON_TERTIARY -> tertiaryDownTime
+        else -> 0L
+    }
+
+    private fun setButtonDownTime(button: Int, value: Long) {
+        when (button) {
+            MotionEvent.BUTTON_PRIMARY -> primaryDownTime = value
+            MotionEvent.BUTTON_SECONDARY -> secondaryDownTime = value
+            MotionEvent.BUTTON_TERTIARY -> tertiaryDownTime = value
+        }
     }
 
     /** Continuous trackpad-style scroll at the cursor (native ACTION_SCROLL). */
@@ -149,8 +177,11 @@ class NativeInjector(
 
     companion object {
         private const val WM_MOUSEMOVE = 0x0200
+        private const val WM_LBUTTONDOWN = 0x0201
         private const val WM_LBUTTONUP = 0x0202
+        private const val WM_RBUTTONDOWN = 0x0204
         private const val WM_RBUTTONUP = 0x0205
+        private const val WM_MBUTTONDOWN = 0x0207
         private const val WM_MBUTTONUP = 0x0208
         private const val WM_MOUSEWHEEL = 0x020A
         private const val LLKHF_UP = 0x80
