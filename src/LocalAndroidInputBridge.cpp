@@ -409,6 +409,10 @@ void LocalAndroidInputBridge::Run() {
             activeEntryEdge = transition->entryEdge;
             androidX = targetPoint->x;
             androidY = targetPoint->y;
+            if (m_options.sendControl && !m_options.sendControl(true)) {
+                active = false;
+                return;
+            }
             std::cout << "[ANDROID] Local pointer entered Android from "
                       << edgeDirectionName(transition->exitEdge)
                       << " edge using " << devices[deviceIndex].name
@@ -419,10 +423,16 @@ void LocalAndroidInputBridge::Run() {
         androidY = ClampNormalized(androidY + normalizedDy);
         if (!sendMove()) {
             active = false;
+            if (m_options.sendControl) {
+                m_options.sendControl(false);
+            }
             return;
         }
         if (MovementReturnsFromEdge(activeEntryEdge, androidX, androidY, normalizedDx, normalizedDy)) {
             active = false;
+            if (m_options.sendControl) {
+                m_options.sendControl(false);
+            }
             std::cout << "[ANDROID] Local pointer returned to Fedora." << std::endl;
         }
     };
@@ -531,6 +541,9 @@ void LocalAndroidInputBridge::Run() {
         }
     }
 
+    if (active && m_options.sendControl) {
+        m_options.sendControl(false);
+    }
     ClosePointerDevices(devices);
     XCloseDisplay(display);
 }
