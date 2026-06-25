@@ -35,27 +35,34 @@ const donkeySilhouette = (ink) => `
     <ellipse cx="512" cy="676" rx="110" ry="96"/>
   </g>`;
 
-// masked monochrome: solid face with knocked-out eyes / inner-ears / nostrils.
-// Best for raster tray + notification PNGs (survives theme tinting).
-const donkeyMono = (id, ink) => `
-  <defs><mask id="${id}">
-    <rect width="1024" height="1024" fill="black"/>
-    <g fill="white">
+const donkeyInkShapes = `
       <g transform="translate(450,432) rotate(-20)"><rect x="-42" y="-232" width="84" height="252" rx="42"/></g>
       <g transform="translate(574,432) rotate(20)"><rect x="-42" y="-232" width="84" height="252" rx="42"/></g>
       <path d="M474 446 q14 -64 38 -64 q24 0 38 64 q-38 -22 -76 0 Z"/>
       <ellipse cx="512" cy="556" rx="156" ry="170"/>
-      <ellipse cx="512" cy="676" rx="110" ry="96"/>
-    </g>
-    <g fill="black">
+      <ellipse cx="512" cy="676" rx="110" ry="96"/>`;
+
+const donkeyKnockoutShapes = `
       <g transform="translate(450,432) rotate(-20)"><rect x="-20" y="-206" width="40" height="150" rx="20"/></g>
       <g transform="translate(574,432) rotate(20)"><rect x="-20" y="-206" width="40" height="150" rx="20"/></g>
       <ellipse cx="454" cy="540" rx="23" ry="29"/>
       <ellipse cx="570" cy="540" rx="23" ry="29"/>
       <rect x="479" y="668" width="12" height="30" rx="6" transform="rotate(-12 485 683)"/>
-      <rect x="533" y="668" width="12" height="30" rx="6" transform="rotate(12 539 683)"/>
+      <rect x="533" y="668" width="12" height="30" rx="6" transform="rotate(12 539 683)"/>`;
+
+const donkeyMask = (id, extraKnockouts='') => `
+  <defs><mask id="${id}">
+    <rect width="1024" height="1024" fill="black"/>
+    <g fill="white">${donkeyInkShapes}
+    </g>
+    <g fill="black">${donkeyKnockoutShapes}${extraKnockouts}
     </g>
   </mask></defs>
+`;
+
+// masked monochrome: solid face with knocked-out eyes / inner-ears / nostrils.
+// Best for raster tray + notification PNGs (survives theme tinting).
+const donkeyMono = (id, ink, extraKnockouts='') => `${donkeyMask(id, extraKnockouts)}
   <rect width="1024" height="1024" fill="${ink}" mask="url(#${id})"/>`;
 
 const cursor = `<g transform="translate(656,654) rotate(8)">
@@ -65,4 +72,4 @@ const cursor = `<g transform="translate(656,654) rotate(8)">
 const gradientDefs = `<defs><linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
     <stop offset="0" stop-color="#22D3EE"/><stop offset="1" stop-color="#6366F1"/></linearGradient></defs>`;
 
-module.exports = { W, wrap, donkeyColor, donkeySilhouette, donkeyMono, cursor, gradientDefs };
+module.exports = { W, wrap, donkeyColor, donkeySilhouette, donkeyMask, donkeyMono, cursor, gradientDefs };
