@@ -13,6 +13,7 @@ android_relay_port=15102
 android_relay_secret=replace-with-a-long-random-secret
 android_peer_name=pixel-8
 android_capture_backend=none
+notification_sync_enabled=false
 ```
 
 Then enable topology and add a machine/display whose machine id matches `android_peer_name`. When a cross-machine topology edge targets that machine, InputFlow forwards mouse events to Android. Keyboard events follow while the Android relay is active.
@@ -37,6 +38,24 @@ JAVA_HOME=/path/to/jdk-21 ./gradlew :app:assembleDebug
 
 The relay foreground service uses the `connectedDevice` type so Android 15's
 `dataSync` runtime cap does not kill long sessions.
+
+### Notification sync
+
+Android-to-Linux notification mirroring is available behind two opt-ins:
+
+1. Set `notification_sync_enabled=true` in the Linux config.
+2. In the Android app, open **Settings → Notifications**, enable sync, and grant
+   Android notification listener access when Settings opens.
+
+When enabled, the Android app sends `notification_upsert` and
+`notification_dismiss` frames over the existing authenticated relay. The Linux
+client displays mirrored Android notifications through `notify-send` when it is
+available. InputFlow skips its own notifications, ongoing/group-summary
+notifications, hidden-content notifications, and messages that look like OTP,
+password, banking, or card content.
+
+This first slice is Android → Linux. Linux and Windows notification capture can
+reuse the same relay frames, but require platform-specific listener work.
 
 ### Input injection backends (Settings → Input method)
 

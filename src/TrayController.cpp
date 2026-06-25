@@ -867,6 +867,7 @@ int RunTrayAndGui(const std::string& binary,
         options.androidRelay.layoutEditorEnabled = runtimeConfig.androidLayoutEditorEnabled;
         options.androidRelay.androidDeviceWidth  = runtimeConfig.androidDeviceWidth;
         options.androidRelay.androidDeviceHeight = runtimeConfig.androidDeviceHeight;
+        options.androidRelay.notificationSyncEnabled = runtimeConfig.notificationSyncEnabled;
 
         options.onSessionEstablished = [&](const std::string& host, int port,
                                            const std::string& remoteName, uint32_t, uint32_t localMachineId) {

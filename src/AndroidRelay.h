@@ -21,6 +21,7 @@ struct AndroidRelayOptions {
     bool layoutEditorEnabled{true};
     int androidDeviceWidth{1920};
     int androidDeviceHeight{1200};
+    bool notificationSyncEnabled{false};
 };
 
 class AndroidRelayServer {

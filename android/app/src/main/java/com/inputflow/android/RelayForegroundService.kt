@@ -21,6 +21,7 @@ class RelayForegroundService : Service() {
 
     @Volatile
     private var output: DataOutputStream? = null
+    private val outputLock = Any()
     @Volatile
     private var remoteControlActive = false
     private var deliveredMouseFrames = 0
@@ -84,12 +85,40 @@ class RelayForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     fun sendTopologyUpdate(layout: JSONArray) {
-        try {
-            output?.let {
-                RelayProtocol.writeFrame(it, JSONObject().put("type", "topology_update").put("layout", layout))
-            }
-        } catch (_: Exception) {}
+        writeFrame(JSONObject().put("type", "topology_update").put("layout", layout))
     }
+
+    fun isConnectedForWrites(): Boolean =
+        currentState == STATE_CONNECTED && output != null
+
+    fun sendNotificationUpsert(
+        stableId: String,
+        app: String,
+        packageName: String,
+        title: String,
+        body: String,
+        postedAtMs: Long
+    ): Boolean =
+        writeFrame(
+            JSONObject()
+                .put("type", "notification_upsert")
+                .put("stable_id", stableId)
+                .put("origin", "android")
+                .put("app", app)
+                .put("package", packageName)
+                .put("title", title)
+                .put("body", body)
+                .put("posted_at_ms", postedAtMs)
+        )
+
+    fun sendNotificationDismiss(stableId: String, packageName: String): Boolean =
+        writeFrame(
+            JSONObject()
+                .put("type", "notification_dismiss")
+                .put("stable_id", stableId)
+                .put("origin", "android")
+                .put("package", packageName)
+        )
 
     private fun startRelay() {
         if (!running.compareAndSet(false, true)) return
@@ -104,17 +133,18 @@ class RelayForegroundService : Service() {
             "control" -> setRemoteControlActive(frame.optBoolean("active", false))
             "mouse" -> if (remoteControlActive) {
                 // Prefer native injection (Shizuku/root); fall back to accessibility.
-                if (!InjectorManager.handleMouse(frame)) {
-                    val accessibility = InputFlowAccessibilityService.instance
-                    if (accessibility != null) {
-                        deliveredMouseFrames += 1
-                        accessibility.handleMouse(frame)
-                    } else {
-                        if (droppedMouseFrames < 5) {
-                            Log.w(TAG, "mouse frame dropped: no injector active")
-                        }
-                        droppedMouseFrames += 1
+                val accessibility = InputFlowAccessibilityService.instance
+                val isMove = frame.optInt("wParam") == WM_MOUSEMOVE
+                if (isMove && InjectorManager.handleMouse(frame)) {
+                    // Native pointer motion succeeded.
+                } else if (accessibility != null) {
+                    deliveredMouseFrames += 1
+                    accessibility.handleMouse(frame)
+                } else if (!InjectorManager.handleMouse(frame)) {
+                    if (droppedMouseFrames < 5) {
+                        Log.w(TAG, "mouse frame dropped: no injector active")
                     }
+                    droppedMouseFrames += 1
                 }
             }
             "keyboard" -> {
@@ -136,20 +166,17 @@ class RelayForegroundService : Service() {
                 }
             }
             "gesture" -> if (remoteControlActive) {
-                // Native continuous scroll when available; richer gestures via accessibility.
-                if (shouldUseAccessibilityGesture(frame) || !InjectorManager.handleScroll(frame)) {
-                    InputFlowAccessibilityService.instance?.handleGesture(frame)
+                val accessibility = InputFlowAccessibilityService.instance
+                if (accessibility != null) {
+                    accessibility.handleGesture(frame)
+                } else if (frame.optString("kind") == "scroll") {
+                    InjectorManager.handleScroll(frame)
                 }
             }
             "devices_info" -> handleDevicesInfo(frame)
+            "notification_upsert" -> NotificationSyncBridge.showMirroredNotification(this, frame)
+            "notification_dismiss" -> NotificationSyncBridge.cancelMirroredNotification(this, frame)
         }
-    }
-
-    private fun shouldUseAccessibilityGesture(frame: JSONObject): Boolean {
-        if (frame.optString("kind") != "scroll") return true
-        val dx = kotlin.math.abs(frame.optDouble("dx", 0.0))
-        val dy = kotlin.math.abs(frame.optDouble("dy", 0.0))
-        return dx >= 2.0 && dx >= dy * 1.8
     }
 
     private fun relayLoop() {
@@ -225,11 +252,26 @@ class RelayForegroundService : Service() {
     }
 
     private fun sendRelease() {
-        try {
-            output?.let {
-                RelayProtocol.writeFrame(it, JSONObject().put("type", "release"))
+        writeFrame(JSONObject().put("type", "release"))
+    }
+
+    private fun writeFrame(frame: JSONObject): Boolean {
+        return try {
+            synchronized(outputLock) {
+                output?.let {
+                    RelayProtocol.writeFrame(it, frame)
+                    true
+                } ?: run {
+                    Log.w(TAG, "failed to write relay frame type=${frame.optString("type")}: no relay output stream")
+                    false
+                }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to write relay frame type=${frame.optString("type")}", e)
+            output = null
+            broadcastStatus(STATE_DISCONNECTED, "Retrying…")
+            false
+        }
     }
 
     private fun setRemoteControlActive(active: Boolean) {
@@ -295,6 +337,7 @@ class RelayForegroundService : Service() {
         const val KEY_PORT = "port"
         const val KEY_SECRET = "secret"
         const val KEY_LAPTOP_TYPING_ENABLED = "laptop_typing_enabled"
+        const val KEY_NOTIFICATION_SYNC_ENABLED = "notification_sync_enabled"
         const val KEY_STATUS_STATE = "status_state"
         const val KEY_STATUS_DETAIL = "status_detail"
         const val KEY_STATUS_HAS_DETAIL = "status_has_detail"

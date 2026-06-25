@@ -4,9 +4,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
 import android.widget.RadioGroup
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
@@ -29,6 +31,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var injectBackendGroup: RadioGroup
     private lateinit var injectStatusText: TextView
     private lateinit var injectConsentSwitch: MaterialSwitch
+    private lateinit var notificationSyncSwitch: MaterialSwitch
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,6 +71,18 @@ class SettingsActivity : AppCompatActivity() {
         sensitivitySlider.value = prefs.getFloat(KEY_SENSITIVITY, 1.0f).coerceIn(0.5f, 3.0f)
 
         laptopTypingSwitch.isChecked = prefs.getBoolean(RelayForegroundService.KEY_LAPTOP_TYPING_ENABLED, false)
+        notificationSyncSwitch = findViewById(R.id.notificationSyncSwitch)
+        notificationSyncSwitch.isChecked =
+            prefs.getBoolean(RelayForegroundService.KEY_NOTIFICATION_SYNC_ENABLED, false)
+        notificationSyncSwitch.setOnCheckedChangeListener { _, checked ->
+            saveSettings()
+            if (checked) {
+                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            }
+        }
+        findViewById<MaterialButton>(R.id.btnSendTestNotification).setOnClickListener {
+            sendTestNotification()
+        }
 
         // Restore keyboard mode
         when (prefs.getString(KEY_KEYBOARD_MODE, "accessibility")) {
@@ -179,6 +194,35 @@ class SettingsActivity : AppCompatActivity() {
             "Shizuku: ${if (shizuku) "ready" else "unavailable"}    Root: ${if (root) "ready" else "unavailable"}"
     }
 
+    private fun sendTestNotification() {
+        saveSettings()
+        if (!notificationSyncSwitch.isChecked) {
+            Toast.makeText(this, R.string.test_notification_enable_sync, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val relay = RelayForegroundService.instance
+        if (relay?.isConnectedForWrites() != true) {
+            Toast.makeText(this, R.string.test_notification_not_connected, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        val sent = relay.sendNotificationUpsert(
+            stableId = "inputflow-test:$now",
+            app = getString(R.string.app_name),
+            packageName = packageName,
+            title = getString(R.string.test_notification_title),
+            body = getString(R.string.test_notification_body),
+            postedAtMs = now
+        )
+        Toast.makeText(
+            this,
+            if (sent) R.string.test_notification_sent else R.string.test_notification_failed,
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
     private fun saveSettings() {
         val prefs = getSharedPreferences(RelayForegroundService.PREFS, Context.MODE_PRIVATE)
         val cursorSize = when (cursorSizeGroup.checkedButtonId) {
@@ -207,6 +251,7 @@ class SettingsActivity : AppCompatActivity() {
             .putString(KEY_CURSOR_COLOR, cursorColor)
             .putFloat(KEY_SENSITIVITY, sensitivitySlider.value)
             .putBoolean(RelayForegroundService.KEY_LAPTOP_TYPING_ENABLED, laptopTypingSwitch.isChecked)
+            .putBoolean(RelayForegroundService.KEY_NOTIFICATION_SYNC_ENABLED, notificationSyncSwitch.isChecked)
             .putString(KEY_KEYBOARD_MODE, keyboardMode)
             .putString(KEY_CONNECTION_MODE, connectionMode)
             .putString(InjectorManager.KEY_INJECT_BACKEND, injectBackend)

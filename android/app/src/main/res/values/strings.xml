@@ -2,6 +2,7 @@
     <string name="app_name">InputFlow</string>
     <string name="accessibility_label">InputFlow controlled peer</string>
     <string name="ime_label">InputFlow keyboard</string>
+    <string name="notification_listener_label">InputFlow notification sync</string>
 
     <!-- Main screen -->
     <string name="status_connected">Connected</string>
@@ -44,6 +45,16 @@
     <string name="settings_mode_direct">Direct InputFlow (Linux host)</string>
     <string name="mode_help_powertoys">Windows runs PowerToys Mouse Without Borders. InputFlow on Linux captures that stream and relays input to this device.</string>
     <string name="mode_help_direct">InputFlow on Linux is the primary source. No Windows or PowerToys needed. The Linux machine relays keyboard and mouse directly to this device.</string>
+    <string name="section_notifications">Notifications</string>
+    <string name="settings_notification_sync">Sync Android notifications</string>
+    <string name="settings_notification_sync_hint">Mirrors allowed Android notifications to connected InputFlow desktops. Sensitive-looking messages are skipped.</string>
+    <string name="btn_send_test_notification">Send test notification</string>
+    <string name="test_notification_title">InputFlow test notification</string>
+    <string name="test_notification_body">If this appears on your desktop, notification sync is working.</string>
+    <string name="test_notification_sent">Test notification sent to desktop.</string>
+    <string name="test_notification_failed">Could not send test notification.</string>
+    <string name="test_notification_not_connected">Connect to InputFlow before sending a test.</string>
+    <string name="test_notification_enable_sync">Enable notification sync first.</string>
     <string name="section_layout">Device layout</string>
     <string name="btn_edit_layout">Edit Device Layout</string>
     <string name="layout_editor_hint">Drag devices to set their position relative to each other. The green device is this tablet.</string>

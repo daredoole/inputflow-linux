@@ -154,8 +154,7 @@ object InjectorManager {
     /** @return true if handled natively; false to let the accessibility path handle it. */
     fun handleMouse(frame: JSONObject): Boolean {
         val n = native ?: return false
-        n.handleMouse(frame)
-        return true
+        return n.handleMouse(frame)
     }
 
     fun handleKeyboard(frame: JSONObject): Boolean {
@@ -166,8 +165,7 @@ object InjectorManager {
     /** Native continuous scroll for 2-finger trackpad gestures. */
     fun handleScroll(frame: JSONObject): Boolean {
         val n = native ?: return false
-        n.scrollBy(frame.optDouble("dx", 0.0).toFloat(), frame.optDouble("dy", 0.0).toFloat())
-        return true
+        return n.scrollBy(frame.optDouble("dx", 0.0).toFloat(), frame.optDouble("dy", 0.0).toFloat())
     }
 
     private fun sensitivity(context: Context): Float {

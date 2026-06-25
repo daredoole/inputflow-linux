@@ -1240,6 +1240,7 @@ int RunClient(const mwb::AppConfig& config,
     options.androidRelay.layoutEditorEnabled = runtimeConfig.androidLayoutEditorEnabled;
     options.androidRelay.androidDeviceWidth = runtimeConfig.androidDeviceWidth;
     options.androidRelay.androidDeviceHeight = runtimeConfig.androidDeviceHeight;
+    options.androidRelay.notificationSyncEnabled = runtimeConfig.notificationSyncEnabled;
     options.onSessionEstablished = [&](const std::string& host, int port, const std::string& remoteName, uint32_t, uint32_t localMachineId) {
         std::lock_guard<std::mutex> lock(stateMutex);
         mwb::MarkSessionEstablished(state, host, port, remoteName, localMachineId, CurrentEpochSeconds());
@@ -1745,6 +1746,8 @@ int HandleDoctorCommand(const std::vector<std::string>& args) {
             " port=" + std::to_string(config.androidRelayPort) +
             " peer=" + (config.androidPeerName.empty() ? "<unset>" : config.androidPeerName) +
             " secret=" + (config.androidRelaySecret.empty() ? "missing" : "configured"));
+        PrintDoctorLine("INFO", "notification sync",
+            config.notificationSyncEnabled ? "enabled" : "disabled");
         PrintDoctorLine("INFO", "reconnect", "initial=" + std::to_string(config.reconnectInitialBackoffMs) +
             "ms max=" + std::to_string(config.reconnectMaxBackoffMs) +
             "ms idle=" + std::to_string(config.reconnectIdleRetryMs) + "ms");

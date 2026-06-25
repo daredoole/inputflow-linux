@@ -29,14 +29,14 @@ class NativeInjector(
     private fun inject(event: android.view.InputEvent): Boolean =
         try { service.inject(event) } catch (_: Throwable) { false }
 
-    fun handleMouse(frame: JSONObject) {
+    fun handleMouse(frame: JSONObject): Boolean {
         val m = metricsProvider()
         if (!primed) {
             px = m.widthPixels / 2f
             py = m.heightPixels / 2f
             primed = true
         }
-        when (frame.optInt("wParam")) {
+        return when (frame.optInt("wParam")) {
             WM_MOUSEMOVE -> {
                 val sens = sensitivityProvider()
                 val baseX = frame.optInt("x") / 65535f * m.widthPixels
@@ -51,19 +51,21 @@ class NativeInjector(
             WM_RBUTTONUP -> click(MotionEvent.BUTTON_SECONDARY)
             WM_MBUTTONUP -> click(MotionEvent.BUTTON_TERTIARY)
             WM_MOUSEWHEEL -> scroll(frame.optInt("mouseData"))
+            else -> false
         }
     }
 
-    private fun click(button: Int) {
+    private fun click(button: Int): Boolean {
         val down = SystemClock.uptimeMillis()
-        inject(pointerEvent(MotionEvent.ACTION_DOWN, button, down, down))
-        inject(pointerEvent(MotionEvent.ACTION_BUTTON_PRESS, button, down, down))
-        inject(pointerEvent(MotionEvent.ACTION_BUTTON_RELEASE, 0, down, SystemClock.uptimeMillis()))
-        inject(pointerEvent(MotionEvent.ACTION_UP, 0, down, SystemClock.uptimeMillis()))
+        val downSent = inject(pointerEvent(MotionEvent.ACTION_DOWN, button, down, down))
+        val pressSent = inject(pointerEvent(MotionEvent.ACTION_BUTTON_PRESS, button, down, down))
+        val releaseSent = inject(pointerEvent(MotionEvent.ACTION_BUTTON_RELEASE, 0, down, SystemClock.uptimeMillis()))
+        val upSent = inject(pointerEvent(MotionEvent.ACTION_UP, 0, down, SystemClock.uptimeMillis()))
+        return downSent && pressSent && releaseSent && upSent
     }
 
     /** Continuous trackpad-style scroll at the cursor (native ACTION_SCROLL). */
-    fun scrollBy(dx: Float, dy: Float) {
+    fun scrollBy(dx: Float, dy: Float): Boolean {
         val now = SystemClock.uptimeMillis()
         val props = MotionEvent.PointerProperties().apply {
             id = 0; toolType = MotionEvent.TOOL_TYPE_MOUSE
@@ -78,11 +80,12 @@ class NativeInjector(
             now, now, MotionEvent.ACTION_SCROLL, 1,
             arrayOf(props), arrayOf(coords), 0, 0, 1f, 1f, 0, 0,
             InputDevice.SOURCE_MOUSE, 0)
-        inject(ev)
+        val sent = inject(ev)
         ev.recycle()
+        return sent
     }
 
-    private fun scroll(mouseData: Int) {
+    private fun scroll(mouseData: Int): Boolean {
         val now = SystemClock.uptimeMillis()
         val props = MotionEvent.PointerProperties().apply {
             id = 0; toolType = MotionEvent.TOOL_TYPE_MOUSE
@@ -95,8 +98,9 @@ class NativeInjector(
             now, now, MotionEvent.ACTION_SCROLL, 1,
             arrayOf(props), arrayOf(coords), 0, 0, 1f, 1f, 0, 0,
             InputDevice.SOURCE_MOUSE, 0)
-        inject(ev)
+        val sent = inject(ev)
         ev.recycle()
+        return sent
     }
 
     private fun pointerEvent(

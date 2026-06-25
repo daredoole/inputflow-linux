@@ -13,6 +13,7 @@
 #include <string_view>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
 
@@ -125,11 +126,43 @@ std::optional<std::string> JsonStringValue(const std::string& json, const std::s
         return std::nullopt;
     }
     const std::size_t valueStart = start + marker.size();
-    const std::size_t valueEnd = json.find('"', valueStart);
-    if (valueEnd == std::string::npos) {
-        return std::nullopt;
+    std::string value;
+    bool escaping = false;
+    for (std::size_t index = valueStart; index < json.size(); ++index) {
+        const char ch = json[index];
+        if (escaping) {
+            switch (ch) {
+                case '"':
+                case '\\':
+                case '/':
+                    value.push_back(ch);
+                    break;
+                case 'n':
+                    value.push_back('\n');
+                    break;
+                case 'r':
+                    value.push_back('\r');
+                    break;
+                case 't':
+                    value.push_back('\t');
+                    break;
+                default:
+                    value.push_back(ch);
+                    break;
+            }
+            escaping = false;
+            continue;
+        }
+        if (ch == '\\') {
+            escaping = true;
+            continue;
+        }
+        if (ch == '"') {
+            return value;
+        }
+        value.push_back(ch);
     }
-    return json.substr(valueStart, valueEnd - valueStart);
+    return std::nullopt;
 }
 
 std::string EscapeJson(std::string_view value) {
@@ -158,6 +191,37 @@ std::string EscapeJson(std::string_view value) {
         }
     }
     return escaped;
+}
+
+void ShowLinuxNotification(const std::string& appName,
+                           const std::string& title,
+                           const std::string& body) {
+    if (title.empty() && body.empty()) {
+        return;
+    }
+
+    const std::string displayTitle = appName.empty() || title.empty()
+        ? (title.empty() ? "Android notification" : title)
+        : appName + ": " + title;
+
+    const pid_t child = fork();
+    if (child == 0) {
+        execlp(
+            "notify-send",
+            "notify-send",
+            "-a",
+            "InputFlow",
+            "-i",
+            "inputflow",
+            displayTitle.c_str(),
+            body.c_str(),
+            static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    if (child > 0) {
+        int status = 0;
+        (void)waitpid(child, &status, 0);
+    }
 }
 
 } // namespace
@@ -346,6 +410,19 @@ void AndroidRelayServer::HandleClient(std::shared_ptr<ClientSession> session) {
             }
             if (callback) {
                 callback(*frame);
+            }
+        } else if (*type == "notification_upsert") {
+            if (m_options.notificationSyncEnabled) {
+                ShowLinuxNotification(
+                    JsonStringValue(*frame, "app").value_or("Android"),
+                    JsonStringValue(*frame, "title").value_or(""),
+                    JsonStringValue(*frame, "body").value_or(""));
+            }
+        } else if (*type == "notification_dismiss") {
+            if (m_options.notificationSyncEnabled) {
+                std::cout << "[ANDROID] Notification dismissed: "
+                          << JsonStringValue(*frame, "stable_id").value_or("<unknown>")
+                          << std::endl;
             }
         }
     }

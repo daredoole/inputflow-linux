@@ -501,6 +501,16 @@ bool ParseAppConfig(std::string_view text, AppConfig& outConfig, std::string* er
             continue;
         }
 
+        if (key == "notification_sync_enabled" || key == "notifications_sync_enabled") {
+            const auto parsed = ParseConfigBool(value);
+            if (!parsed.has_value()) {
+                SetError(errorMessage, "Config key 'notification_sync_enabled' expects true/false.");
+                return false;
+            }
+            outConfig.notificationSyncEnabled = *parsed;
+            continue;
+        }
+
         SetError(errorMessage, "Unknown config key '" + std::string(key) + "' on line " + std::to_string(lineNumber) + ".");
         return false;
     }
@@ -577,6 +587,7 @@ std::string RenderAppConfig(const AppConfig& config) {
     out << "android_layout_editor_enabled=" << RenderBool(config.androidLayoutEditorEnabled) << '\n';
     out << "android_device_width=" << config.androidDeviceWidth << '\n';
     out << "android_device_height=" << config.androidDeviceHeight << '\n';
+    out << "notification_sync_enabled=" << RenderBool(config.notificationSyncEnabled) << '\n';
     return out.str();
 }
 
@@ -599,6 +610,7 @@ std::string RenderSampleAppConfig() {
     out << "# Set topology_enabled=true and topology_file=... to enable runtime topology handoff.\n";
     out << "# Set android_peers_enabled=true with android_relay_secret=... to relay input to Android peers.\n";
     out << "# android_capture_backend=none keeps Android relay-only; evdev is prototype-only; libei is the planned KDE/Wayland backend.\n";
+    out << "# Set notification_sync_enabled=true to mirror Android notifications to this desktop over the Android relay.\n";
     out << RenderAppConfig(sample);
     return out.str();
 }
