@@ -51,6 +51,9 @@ install -Dpm0644 packaging/usr/lib/udev/rules.d/70-mwb-client-uinput.rules %{bui
 install -Dpm0644 packaging/usr/lib/systemd/user/mwb-client.service %{buildroot}%{_userunitdir}/mwb-client.service
 install -Dpm0644 packaging/usr/share/applications/inputflow.desktop %{buildroot}%{_datadir}/applications/inputflow.desktop
 install -Dpm0644 assets/icons/inputflow-desktop.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/inputflow.svg
+# Raster app icons (16-512) + tray status icons across the hicolor theme tree
+cp -r assets/hicolor/. %{buildroot}%{_datadir}/icons/hicolor/
+find %{buildroot}%{_datadir}/icons/hicolor -type f -exec chmod 0644 {} +
 
 %check
 ctest --test-dir %{_vpath_builddir} --output-on-failure
@@ -62,6 +65,7 @@ ctest --test-dir %{_vpath_builddir} --output-on-failure
 %systemd_user_post mwb-client.service
 udevadm control --reload-rules || :
 udevadm trigger --name-match=uinput || :
+touch --no-create %{_datadir}/icons/hicolor &>/dev/null || :
 
 %preun
 %systemd_user_preun mwb-client.service
@@ -70,6 +74,13 @@ udevadm trigger --name-match=uinput || :
 %systemd_user_postun_with_restart mwb-client.service
 udevadm control --reload-rules || :
 udevadm trigger --name-match=uinput || :
+if [ $1 -eq 0 ] ; then
+    touch --no-create %{_datadir}/icons/hicolor &>/dev/null
+    gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
+fi
+
+%posttrans
+gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
 
 %files
 %license LICENSE
@@ -84,6 +95,9 @@ udevadm trigger --name-match=uinput || :
 %{_userunitdir}/mwb-client.service
 %{_datadir}/applications/inputflow.desktop
 %{_datadir}/icons/hicolor/scalable/apps/inputflow.svg
+%{_datadir}/icons/hicolor/*/apps/inputflow.png
+%{_datadir}/icons/hicolor/scalable/status/inputflow-tray*.svg
+%{_datadir}/icons/hicolor/*/status/inputflow-tray*.png
 
 %changelog
 * Fri Apr 24 2026 InputFlow Maintainers <maintainers@example.invalid> - 0.1.0-1

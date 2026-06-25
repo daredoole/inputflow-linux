@@ -1,7 +1,8 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <mask id="dk">
-      <rect width="1024" height="1024" fill="black"/>
+    <mask id="mn">
+      <rect x="0" y="0" width="1024" height="1024" fill="black"/>
+      <!-- white = ink -->
       <g fill="white">
         <g transform="translate(450,432) rotate(-20)"><rect x="-42" y="-232" width="84" height="252" rx="42"/></g>
         <g transform="translate(574,432) rotate(20)"><rect x="-42" y="-232" width="84" height="252" rx="42"/></g>
@@ -9,6 +10,7 @@
         <ellipse cx="512" cy="556" rx="156" ry="170"/>
         <ellipse cx="512" cy="676" rx="110" ry="96"/>
       </g>
+      <!-- black = holes -->
       <g fill="black">
         <g transform="translate(450,432) rotate(-20)"><rect x="-20" y="-206" width="40" height="150" rx="20"/></g>
         <g transform="translate(574,432) rotate(20)"><rect x="-20" y="-206" width="40" height="150" rx="20"/></g>
@@ -16,13 +18,7 @@
         <ellipse cx="570" cy="540" rx="23" ry="29"/>
         <rect x="479" y="668" width="12" height="30" rx="6" transform="rotate(-12 485 683)"/>
         <rect x="533" y="668" width="12" height="30" rx="6" transform="rotate(12 539 683)"/>
-        <!-- gap ring so the badge separates -->
-        <circle cx="768" cy="760" r="184"/>
       </g>
     </mask>
   </defs>
-  <rect width="1024" height="1024" fill="#2E3440" mask="url(#dk)"/>
-  <g fill="#2E3440" fill-rule="evenodd">
-  <path fill-rule="evenodd" d="
-    M 768 610 a 150 150 0 1 0 0.01 0 Z
-    M 702 716 l 26 -26 l 110 110 l -26 26 Z"/></g></svg>
+  <rect x="0" y="0" width="1024" height="1024" fill="#FFFFFF" mask="url(#mn)"/></svg>

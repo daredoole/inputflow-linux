@@ -1,0 +1,14 @@
+{
+  "name": "inputflow-icons",
+  "version": "1.0.0",
+  "private": true,
+  "description": "InputFlow donkey icon set — Linux hicolor + Android adaptive/notification + Play Store",
+  "scripts": {
+    "masters": "node build-masters.js",
+    "build": "node build.js"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "svg2vectordrawable": "^2.9.1"
+  }
+}
