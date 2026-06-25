@@ -18,6 +18,7 @@ struct LocalAndroidInputBridgeOptions {
     int desktopWidth{0};
     int desktopHeight{0};
     std::function<bool(const MouseData&)> sendMouse;
+    std::function<bool(const std::string&, double, double)> sendGesture;
 };
 
 class LocalAndroidInputBridge {

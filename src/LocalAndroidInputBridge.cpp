@@ -48,6 +48,7 @@ struct DeviceState {
     int relDx{0};
     int relDy{0};
     int wheel{0};
+    int hWheel{0};
     bool hasAbsX{false};
     bool hasAbsY{false};
     bool hasTouchState{false};
@@ -464,6 +465,8 @@ void LocalAndroidInputBridge::Run() {
                         device.relDy += event.value;
                     } else if (event.code == REL_WHEEL) {
                         device.wheel += event.value;
+                    } else if (event.code == REL_HWHEEL) {
+                        device.hWheel += event.value;
                     }
                 } else if (event.type == EV_ABS) {
                     if (event.code == ABS_X && device.hasAbsX) {
@@ -516,9 +519,13 @@ void LocalAndroidInputBridge::Run() {
                         MouseData wheel{androidX, androidY, device.wheel * 120, WM_MOUSEWHEEL};
                         m_options.sendMouse(wheel);
                     }
+                    if (active && device.hWheel != 0 && m_options.sendGesture) {
+                        m_options.sendGesture("scroll", device.hWheel * 8.0, 0.0);
+                    }
                     device.relDx = 0;
                     device.relDy = 0;
                     device.wheel = 0;
+                    device.hWheel = 0;
                 }
             }
         }

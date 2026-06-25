@@ -137,12 +137,19 @@ class RelayForegroundService : Service() {
             }
             "gesture" -> if (remoteControlActive) {
                 // Native continuous scroll when available; richer gestures via accessibility.
-                if (frame.optString("kind") != "scroll" || !InjectorManager.handleScroll(frame)) {
+                if (shouldUseAccessibilityGesture(frame) || !InjectorManager.handleScroll(frame)) {
                     InputFlowAccessibilityService.instance?.handleGesture(frame)
                 }
             }
             "devices_info" -> handleDevicesInfo(frame)
         }
+    }
+
+    private fun shouldUseAccessibilityGesture(frame: JSONObject): Boolean {
+        if (frame.optString("kind") != "scroll") return true
+        val dx = kotlin.math.abs(frame.optDouble("dx", 0.0))
+        val dy = kotlin.math.abs(frame.optDouble("dy", 0.0))
+        return dx >= 2.0 && dx >= dy * 1.8
     }
 
     private fun relayLoop() {
