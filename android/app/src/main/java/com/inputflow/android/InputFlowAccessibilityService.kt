@@ -290,17 +290,25 @@ class InputFlowAccessibilityService : AccessibilityService() {
     }
 
     private fun handleSwipe3(dx: Double, dy: Double) {
+        if (isAccurateHorizontalSwipe(dx, dy)) {
+            dispatchDirectionalSwipe(if (dx < 0) -1f else 1f, 0f)
+            return
+        }
         if (!isAccurateVerticalSwipe(dx, dy)) return
         mainHandler.post {
             if (dy < 0) {
-                performGlobalActionLogged(GLOBAL_ACTION_HOME, "gesture:3-up")
+                performGlobalActionLogged(GLOBAL_ACTION_RECENTS, "gesture:3-up")
             } else {
-                performGlobalActionLogged(GLOBAL_ACTION_RECENTS, "gesture:3-down")
+                performGlobalActionLogged(GLOBAL_ACTION_HOME, "gesture:3-down")
             }
         }
     }
 
     private fun handleSwipe4(dx: Double, dy: Double) {
+        if (isAccurateHorizontalSwipe(dx, dy)) {
+            dispatchDirectionalSwipe(if (dx < 0) -1f else 1f, 0f)
+            return
+        }
         if (!isAccurateVerticalSwipe(dx, dy)) return
         mainHandler.post {
             if (dy < 0) {
@@ -315,6 +323,12 @@ class InputFlowAccessibilityService : AccessibilityService() {
         val absX = abs(dx)
         val absY = abs(dy)
         return absY >= 32.0 && absY >= absX * 1.45
+    }
+
+    private fun isAccurateHorizontalSwipe(dx: Double, dy: Double): Boolean {
+        val absX = abs(dx)
+        val absY = abs(dy)
+        return absX >= 32.0 && absX >= absY * 1.45
     }
 
     private fun openAppDrawerGesture() {

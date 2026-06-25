@@ -254,7 +254,9 @@ bool EmitClassifiedSwipe(
 
     const double absX = std::abs(dx);
     const double absY = std::abs(dy);
-    if (absY < 36.0 || absY < absX * 1.35) {
+    const bool vertical = absY >= 36.0 && absY >= absX * 1.35;
+    const bool horizontal = absX >= 36.0 && absX >= absY * 1.35;
+    if (!vertical && !horizontal) {
         return false;
     }
 
