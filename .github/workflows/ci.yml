@@ -47,6 +47,8 @@ jobs:
             ccache \
             cmake \
             ninja-build \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
             libx11-dev \
             libssl-dev \
             pkg-config \
@@ -60,6 +62,12 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      - name: Package and smoke-test portable archive
+        run: |
+          cmake --build build --target package
+          archive="$(find build -maxdepth 1 -name 'inputflow-*.tar.gz' -print -quit)"
+          tests/test_portable_archive.sh "$archive"
 
       - name: Compiler cache stats
         run: ccache --show-stats
@@ -174,7 +182,14 @@ jobs:
         run: |
           bash -n mwb-desktop-ui.sh
           bash -n scripts/inputflow-diagnostics-bundle.sh
+          bash -n scripts/release-gate.sh
           bash -n scripts/validate-rpm-packaging.sh
+          bash -n tests/test_diagnostics_privacy.sh
+          bash -n tests/test_portable_archive.sh
+          python3 -m py_compile scripts/generate-release-metadata.py
+
+      - name: Verify diagnostics privacy
+        run: tests/test_diagnostics_privacy.sh scripts/inputflow-diagnostics-bundle.sh
 
       - name: Validate RPM packaging skeleton
         run: scripts/validate-rpm-packaging.sh
@@ -196,7 +211,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build debug APK and run unit tests
+      - name: Build release APK, run unit tests, and enforce lint
         working-directory: android
         run: |
-          ./gradlew :app:assembleDebug :app:testDebugUnitTest --no-daemon --stacktrace
+          ./gradlew :app:assembleRelease :app:testDebugUnitTest :app:lintRelease --no-daemon --stacktrace

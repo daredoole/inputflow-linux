@@ -2,13 +2,13 @@ package com.inputflow.android
 
 import android.content.Context
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
+import androidx.core.content.ContextCompat
 import kotlin.math.roundToInt
 
 data class DeviceRect(
@@ -34,13 +34,17 @@ class LayoutEditorView @JvmOverloads constructor(
         }
 
     private val gridCellPx get() = (64 * resources.displayMetrics.density).toInt()
+    private val deviceRect = RectF()
+    private val cornerRadius = 12f * resources.displayMetrics.density
+    private val remoteDeviceColor = ContextCompat.getColor(context, R.color.colorEditorDevice)
+    private val localDeviceColor = ContextCompat.getColor(context, R.color.colorEditorDeviceLocal)
 
     private val bgPaint = Paint().apply {
-        color = Color.parseColor("#0A1628")
+        color = ContextCompat.getColor(context, R.color.colorEditorBg)
         style = Paint.Style.FILL
     }
     private val gridPaint = Paint().apply {
-        color = Color.parseColor("#1A2840")
+        color = ContextCompat.getColor(context, R.color.colorEditorGrid)
         style = Paint.Style.STROKE
         strokeWidth = 1f
     }
@@ -54,14 +58,14 @@ class LayoutEditorView @JvmOverloads constructor(
         isAntiAlias = true
     }
     private val labelPaint = Paint().apply {
-        color = Color.WHITE
+        color = ContextCompat.getColor(context, R.color.colorEditorText)
         textSize = 14f * resources.displayMetrics.density
         isAntiAlias = true
         typeface = Typeface.DEFAULT_BOLD
         textAlign = Paint.Align.CENTER
     }
     private val badgePaint = Paint().apply {
-        color = Color.parseColor("#1A2840")
+        color = ContextCompat.getColor(context, R.color.colorEditorText)
         textSize = 10f * resources.displayMetrics.density
         isAntiAlias = true
         textAlign = Paint.Align.CENTER
@@ -113,25 +117,18 @@ class LayoutEditorView @JvmOverloads constructor(
             val py = device.gridY * gridCellPx + viewOffsetY
             val pw = device.gridW * gridCellPx
             val ph = device.gridH * gridCellPx
-            val rect = RectF(px.toFloat(), py.toFloat(), (px + pw).toFloat(), (py + ph).toFloat())
-            val radius = 12f * resources.displayMetrics.density
+            deviceRect.set(px.toFloat(), py.toFloat(), (px + pw).toFloat(), (py + ph).toFloat())
 
-            deviceFillPaint.color = if (device.isLocal)
-                Color.parseColor("#1B5E20")
-            else
-                Color.parseColor("#0D47A1")
+            deviceFillPaint.color = if (device.isLocal) localDeviceColor else remoteDeviceColor
             deviceFillPaint.alpha = 200
-            canvas.drawRoundRect(rect, radius, radius, deviceFillPaint)
+            canvas.drawRoundRect(deviceRect, cornerRadius, cornerRadius, deviceFillPaint)
 
-            deviceStrokePaint.color = if (device.isLocal)
-                Color.parseColor("#66BB6A")
-            else
-                Color.parseColor("#42A5F5")
-            canvas.drawRoundRect(rect, radius, radius, deviceStrokePaint)
+            deviceStrokePaint.color = if (device.isLocal) localDeviceColor else remoteDeviceColor
+            canvas.drawRoundRect(deviceRect, cornerRadius, cornerRadius, deviceStrokePaint)
 
             // Label
-            val cx = rect.centerX()
-            val cy = rect.centerY()
+            val cx = deviceRect.centerX()
+            val cy = deviceRect.centerY()
             val lineH = labelPaint.textSize
             if (device.isLocal) {
                 canvas.drawText(device.name, cx, cy - lineH * 0.2f, labelPaint)
@@ -171,12 +168,24 @@ class LayoutEditorView @JvmOverloads constructor(
                 invalidate()
                 return true
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+            MotionEvent.ACTION_UP -> {
                 draggingId = null
                 invalidate()
+                performClick()
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                draggingId = null
+                invalidate()
+                return true
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
     }
 
     fun getLayoutJson(): org.json.JSONArray {

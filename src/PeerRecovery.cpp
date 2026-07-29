@@ -307,9 +307,7 @@ std::optional<std::string> RecoverConfiguredHostFromKnownPeers(const AppConfig& 
     const auto knownPeerHosts = CollectRecoveryCandidateHosts(state, config.host, config.port);
     for (const auto& host : knownPeerHosts) {
         if (auto reachable = ProbeReachableIpv4Host(host, config.port, 250)) {
-            std::cout << "[RECOVERY] Configured peer " << config.host
-                      << " has a verified same-name address "
-                      << *reachable;
+            std::cout << "[RECOVERY] Found a verified approved peer address";
             if (configuredHostIsIpv4) {
                 std::cout << "; using name-priority recovery before trusting the configured IP";
             } else {
@@ -337,16 +335,12 @@ std::optional<std::string> RecoverConfiguredHostFromKnownPeers(const AppConfig& 
                 !HostLabelsMatch(candidate.hostName, config.host)) {
                 continue;
             }
-            std::cout << "[RECOVERY] Configured peer " << config.host
-                      << " resolved by LAN discovery to "
-                      << candidate.ipAddress << " (name=" << candidate.hostName << ")" << std::endl;
+            std::cout << "[RECOVERY] Resolved the approved peer through LAN discovery." << std::endl;
             return candidate.ipAddress;
         }
     }
     for (const auto& host : CollectRecoveryDiscoveredHosts(state, config.host, config.port, candidates)) {
-        std::cout << "[RECOVERY] Configured peer " << config.host
-                  << " is unavailable; using discovered address "
-                  << host << " for the approved peer name" << std::endl;
+        std::cout << "[RECOVERY] Using the verified address of an approved peer." << std::endl;
         return host;
     }
 
@@ -377,9 +371,7 @@ std::optional<std::string> RecoverConfiguredHostFromKnownPeers(const AppConfig& 
                     continue;
                 }
                 if (HostLabelsMatch(candidate.hostName, solePeer->name)) {
-                    std::cout << "[RECOVERY] Stale configured IP " << config.host
-                              << " is unreachable; sole approved peer '" << solePeer->name
-                              << "' rediscovered at " << candidate.ipAddress << std::endl;
+                    std::cout << "[RECOVERY] Rediscovered the sole approved peer." << std::endl;
                     return candidate.ipAddress;
                 }
             }

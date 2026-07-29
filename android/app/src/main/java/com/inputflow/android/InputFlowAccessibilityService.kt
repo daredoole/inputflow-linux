@@ -72,7 +72,7 @@ class InputFlowAccessibilityService : AccessibilityService() {
         val x = frame.optInt("x")
         val y = frame.optInt("y")
         val mouseData = frame.optInt("mouseData")
-        if (loggedMouseFrames < 5) {
+        if (wParam == WM_MOUSEMOVE && loggedMouseFrames < 5) {
             Log.i(TAG, "mouse frame wParam=$wParam x=$x y=$y overlay=${cursorView != null}")
             loggedMouseFrames += 1
         }
@@ -290,17 +290,25 @@ class InputFlowAccessibilityService : AccessibilityService() {
     }
 
     private fun handleSwipe3(dx: Double, dy: Double) {
+        if (isAccurateHorizontalSwipe(dx, dy)) {
+            dispatchPageSwipe(if (dx < 0) -1f else 1f)
+            return
+        }
         if (!isAccurateVerticalSwipe(dx, dy)) return
         mainHandler.post {
             if (dy < 0) {
-                performGlobalActionLogged(GLOBAL_ACTION_HOME, "gesture:3-up")
+                performGlobalActionLogged(GLOBAL_ACTION_RECENTS, "gesture:3-up")
             } else {
-                performGlobalActionLogged(GLOBAL_ACTION_RECENTS, "gesture:3-down")
+                performGlobalActionLogged(GLOBAL_ACTION_HOME, "gesture:3-down")
             }
         }
     }
 
     private fun handleSwipe4(dx: Double, dy: Double) {
+        if (isAccurateHorizontalSwipe(dx, dy)) {
+            dispatchPageSwipe(if (dx < 0) -1f else 1f)
+            return
+        }
         if (!isAccurateVerticalSwipe(dx, dy)) return
         mainHandler.post {
             if (dy < 0) {
@@ -315,6 +323,12 @@ class InputFlowAccessibilityService : AccessibilityService() {
         val absX = abs(dx)
         val absY = abs(dy)
         return absY >= 32.0 && absY >= absX * 1.45
+    }
+
+    private fun isAccurateHorizontalSwipe(dx: Double, dy: Double): Boolean {
+        val absX = abs(dx)
+        val absY = abs(dy)
+        return absX >= 32.0 && absX >= absY * 1.45
     }
 
     private fun openAppDrawerGesture() {
@@ -524,7 +538,10 @@ class InputFlowAccessibilityService : AccessibilityService() {
             lineTo(toX, toY)
         }
         val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
-        dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
+        dispatchGesture(
+            GestureDescription.Builder().addStroke(stroke).build(),
+            null,
+            null)
     }
 
     private fun scroll(mouseData: Int) {
@@ -551,6 +568,10 @@ class InputFlowAccessibilityService : AccessibilityService() {
         pendingScrollDx = 0.0
         pendingScrollDy = 0.0
         if (abs(dx) < 0.05 && abs(dy) < 0.05) return
+        if (isAccurateHorizontalSwipe(dx, dy)) {
+            dispatchPageSwipe(if (dx < 0) -1f else 1f)
+            return
+        }
         val metrics = resources.displayMetrics
         val scale = 34f * metrics.density
         val maxStep = 170f * metrics.density
@@ -559,6 +580,14 @@ class InputFlowAccessibilityService : AccessibilityService() {
         val toX = min(metrics.widthPixels - 1f, max(0f, pointerX - stepX))
         val toY = min(metrics.heightPixels - 1f, max(0f, pointerY - stepY))
         gesture(pointerX, pointerY, toX, toY, 62)
+    }
+
+    private fun dispatchPageSwipe(directionX: Float) {
+        val metrics = resources.displayMetrics
+        val y = metrics.heightPixels * 0.56f
+        val fromX = if (directionX < 0f) metrics.widthPixels * 0.84f else metrics.widthPixels * 0.16f
+        val toX = if (directionX < 0f) metrics.widthPixels * 0.16f else metrics.widthPixels * 0.84f
+        gesture(fromX, y, toX, y, 260)
     }
 
     private fun showCursorOverlay() {

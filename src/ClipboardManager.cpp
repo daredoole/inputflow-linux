@@ -6,11 +6,9 @@
 #include <array>
 #include <cctype>
 #include <cerrno>
-#include <codecvt>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
-#include <locale>
 #include <memory>
 #include <poll.h>
 #include <signal.h>
@@ -194,12 +192,6 @@ std::optional<std::string> runReadCommand(const CommandSpec& command) {
         return std::nullopt;
     }
     return std::string(bytes->begin(), bytes->end());
-}
-
-void trimTrailingNewlines(std::string& text) {
-    while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) {
-        text.pop_back();
-    }
 }
 
 bool runWriteCommand(const CommandSpec& command, const std::string& input) {
@@ -509,13 +501,98 @@ bool runSignalWatchCommand(
 
 
 std::u16string utf8ToUtf16(std::string_view text) {
-    std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> converter;
-    return converter.from_bytes(text.data(), text.data() + text.size());
+    constexpr uint32_t replacement = 0xfffdu;
+    std::u16string output;
+    output.reserve(text.size());
+    std::size_t index = 0;
+    while (index < text.size()) {
+        const auto first = static_cast<unsigned char>(text[index]);
+        uint32_t codePoint = replacement;
+        std::size_t sequenceLength = 1;
+        uint32_t minimum = 0;
+        if (first < 0x80u) {
+            codePoint = first;
+        } else if ((first & 0xe0u) == 0xc0u) {
+            codePoint = first & 0x1fu;
+            sequenceLength = 2;
+            minimum = 0x80u;
+        } else if ((first & 0xf0u) == 0xe0u) {
+            codePoint = first & 0x0fu;
+            sequenceLength = 3;
+            minimum = 0x800u;
+        } else if ((first & 0xf8u) == 0xf0u) {
+            codePoint = first & 0x07u;
+            sequenceLength = 4;
+            minimum = 0x10000u;
+        }
+
+        bool valid = sequenceLength == 1 ? first < 0x80u : index + sequenceLength <= text.size();
+        for (std::size_t offset = 1; valid && offset < sequenceLength; ++offset) {
+            const auto continuation = static_cast<unsigned char>(text[index + offset]);
+            valid = (continuation & 0xc0u) == 0x80u;
+            codePoint = (codePoint << 6u) | (continuation & 0x3fu);
+        }
+        valid = valid &&
+            codePoint >= minimum &&
+            codePoint <= 0x10ffffu &&
+            !(codePoint >= 0xd800u && codePoint <= 0xdfffu);
+        if (!valid) {
+            codePoint = replacement;
+            sequenceLength = 1;
+        }
+        index += sequenceLength;
+
+        if (codePoint <= 0xffffu) {
+            output.push_back(static_cast<char16_t>(codePoint));
+        } else {
+            codePoint -= 0x10000u;
+            output.push_back(static_cast<char16_t>(0xd800u + (codePoint >> 10u)));
+            output.push_back(static_cast<char16_t>(0xdc00u + (codePoint & 0x3ffu)));
+        }
+    }
+    return output;
 }
 
 std::string utf16ToUtf8(const std::u16string& text) {
-    std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> converter;
-    return converter.to_bytes(text);
+    constexpr uint32_t replacement = 0xfffdu;
+    std::string output;
+    output.reserve(text.size() * 2);
+    for (std::size_t index = 0; index < text.size(); ++index) {
+        uint32_t codePoint = text[index];
+        if (codePoint >= 0xd800u && codePoint <= 0xdbffu) {
+            if (index + 1 < text.size()) {
+                const uint32_t low = text[index + 1];
+                if (low >= 0xdc00u && low <= 0xdfffu) {
+                    codePoint =
+                        0x10000u + ((codePoint - 0xd800u) << 10u) + (low - 0xdc00u);
+                    ++index;
+                } else {
+                    codePoint = replacement;
+                }
+            } else {
+                codePoint = replacement;
+            }
+        } else if (codePoint >= 0xdc00u && codePoint <= 0xdfffu) {
+            codePoint = replacement;
+        }
+
+        if (codePoint <= 0x7fu) {
+            output.push_back(static_cast<char>(codePoint));
+        } else if (codePoint <= 0x7ffu) {
+            output.push_back(static_cast<char>(0xc0u | (codePoint >> 6u)));
+            output.push_back(static_cast<char>(0x80u | (codePoint & 0x3fu)));
+        } else if (codePoint <= 0xffffu) {
+            output.push_back(static_cast<char>(0xe0u | (codePoint >> 12u)));
+            output.push_back(static_cast<char>(0x80u | ((codePoint >> 6u) & 0x3fu)));
+            output.push_back(static_cast<char>(0x80u | (codePoint & 0x3fu)));
+        } else {
+            output.push_back(static_cast<char>(0xf0u | (codePoint >> 18u)));
+            output.push_back(static_cast<char>(0x80u | ((codePoint >> 12u) & 0x3fu)));
+            output.push_back(static_cast<char>(0x80u | ((codePoint >> 6u) & 0x3fu)));
+            output.push_back(static_cast<char>(0x80u | (codePoint & 0x3fu)));
+        }
+    }
+    return output;
 }
 
 std::vector<uint8_t> encodeUtf16Le(std::u16string_view text) {

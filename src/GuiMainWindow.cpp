@@ -16,6 +16,91 @@ namespace {
 
 constexpr const char* kServiceName = "mwb-client.service";
 constexpr const char* kSystemctlPath = "/usr/bin/systemctl";
+constexpr const char* kInputFlowCss = R"CSS(
+.inputflow-window {
+  background-color: #f3f8f7;
+  color: #12252c;
+}
+.inputflow-window notebook > header {
+  background-color: #e4f0ed;
+  border-bottom: 1px solid #bcd7d2;
+}
+.inputflow-window notebook > header tab {
+  padding: 10px 14px;
+  color: #355158;
+}
+.inputflow-window notebook > header tab:checked {
+  color: #0b6f6b;
+  border-bottom: 3px solid #0b7f7a;
+}
+.inputflow-hero {
+  background-color: #092f35;
+  border: 1px solid #15545a;
+  border-radius: 14px;
+  padding: 18px;
+}
+.inputflow-hero label {
+  color: #f4fbf9;
+}
+.inputflow-eyebrow {
+  color: #72d4c6;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+}
+.inputflow-status-title {
+  font-size: 22px;
+  font-weight: 700;
+}
+.inputflow-status-detail {
+  color: #b9d9d4;
+}
+.inputflow-section-title {
+  color: #0b6f6b;
+  font-size: 14px;
+  font-weight: 700;
+}
+.inputflow-panel {
+  background-color: #ffffff;
+  border: 1px solid #bcd7d2;
+  border-radius: 10px;
+}
+.inputflow-window button {
+  border-radius: 8px;
+  padding: 7px 12px;
+}
+.inputflow-window button.suggested-action {
+  background-color: #0b7f7a;
+  color: #ffffff;
+}
+.inputflow-window button.destructive-action {
+  color: #a73540;
+}
+.inputflow-window textview {
+  background-color: #102a31;
+  color: #d9eeea;
+  font-family: monospace;
+}
+)CSS";
+
+void InstallDesignSystem(GtkWidget* window) {
+    GtkCssProvider* provider = gtk_css_provider_new();
+    GError* error = nullptr;
+    if (!gtk_css_provider_load_from_data(provider, kInputFlowCss, -1, &error)) {
+        if (error != nullptr) {
+            std::fprintf(stderr, "InputFlow UI theme could not be loaded: %s\n", error->message);
+            g_error_free(error);
+        }
+        g_object_unref(provider);
+        return;
+    }
+    gtk_style_context_add_provider_for_screen(
+        gtk_widget_get_screen(window),
+        GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    gtk_style_context_add_class(gtk_widget_get_style_context(window), "inputflow-window");
+    g_object_unref(provider);
+}
 
 // ---- colour helpers --------------------------------------------------------
 
@@ -46,8 +131,28 @@ gboolean OnDotDraw(GtkWidget* widget, cairo_t* cr, gpointer data) {
 
 void RunServiceAction(const std::string& action) {
     if (access(kSystemctlPath, X_OK) != 0) return;
-    std::string cmd = std::string(kSystemctlPath) + " --user " + action + " " + kServiceName + " &";
-    (void)std::system(cmd.c_str());
+    const gchar* argv[] = {
+        kSystemctlPath,
+        "--user",
+        action.c_str(),
+        kServiceName,
+        nullptr,
+    };
+    GError* error = nullptr;
+    if (!g_spawn_async(
+            nullptr,
+            const_cast<gchar**>(argv),
+            nullptr,
+            static_cast<GSpawnFlags>(G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL),
+            nullptr,
+            nullptr,
+            nullptr,
+            &error)) {
+        if (error != nullptr) {
+            std::fprintf(stderr, "InputFlow service action failed: %s\n", error->message);
+            g_error_free(error);
+        }
+    }
 }
 
 void OnStartService(GtkButton*, gpointer)   { RunServiceAction("start");   }
@@ -58,8 +163,31 @@ bool IsServiceActive() {
     if (access(kSystemctlPath, X_OK) != 0) {
         return false;
     }
-    std::string cmd = std::string(kSystemctlPath) + " --user is-active --quiet " + kServiceName;
-    return std::system(cmd.c_str()) == 0;
+    const gchar* argv[] = {
+        kSystemctlPath,
+        "--user",
+        "is-active",
+        "--quiet",
+        kServiceName,
+        nullptr,
+    };
+    gint waitStatus = -1;
+    GError* error = nullptr;
+    const gboolean launched = g_spawn_sync(
+        nullptr,
+        const_cast<gchar**>(argv),
+        nullptr,
+        static_cast<GSpawnFlags>(G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL),
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        &waitStatus,
+        &error);
+    if (error != nullptr) {
+        g_error_free(error);
+    }
+    return launched && g_spawn_check_wait_status(waitStatus, nullptr);
 }
 
 // After saving settings, a running daemon keeps its old config until restarted.
@@ -390,23 +518,33 @@ void OnRefreshPeers(GtkButton*, gpointer data) {
 }
 
 GtkWidget* BuildStatusTab(GuiMainWindow* win) {
-    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_container_set_border_width(GTK_CONTAINER(box), 16);
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_container_set_border_width(GTK_CONTAINER(box), 20);
 
-    // Dot + state row
+    GtkWidget* hero = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_style_context_add_class(gtk_widget_get_style_context(hero), "inputflow-hero");
+    GtkWidget* eyebrow = gtk_label_new("TRUSTED CONNECTION");
+    gtk_label_set_xalign(GTK_LABEL(eyebrow), 0.0f);
+    gtk_style_context_add_class(gtk_widget_get_style_context(eyebrow), "inputflow-eyebrow");
+    gtk_box_pack_start(GTK_BOX(hero), eyebrow, FALSE, FALSE, 0);
+
     GtkWidget* stateRow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     win->dotArea = gtk_drawing_area_new();
     gtk_widget_set_size_request(win->dotArea, 18, 18);
+    atk_object_set_name(gtk_widget_get_accessible(win->dotArea), "Connection status");
     g_signal_connect(win->dotArea, "draw", G_CALLBACK(OnDotDraw), win);
     gtk_box_pack_start(GTK_BOX(stateRow), win->dotArea, FALSE, FALSE, 0);
     win->stateLabel = gtk_label_new("Checking...");
+    gtk_style_context_add_class(gtk_widget_get_style_context(win->stateLabel), "inputflow-status-title");
     gtk_box_pack_start(GTK_BOX(stateRow), win->stateLabel, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(box), stateRow, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hero), stateRow, FALSE, FALSE, 0);
 
     win->detailLabel = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(win->detailLabel), 0.0f);
-    gtk_style_context_add_class(gtk_widget_get_style_context(win->detailLabel), "dim-label");
-    gtk_box_pack_start(GTK_BOX(box), win->detailLabel, FALSE, FALSE, 0);
+    gtk_label_set_line_wrap(GTK_LABEL(win->detailLabel), TRUE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(win->detailLabel), "inputflow-status-detail");
+    gtk_box_pack_start(GTK_BOX(hero), win->detailLabel, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), hero, FALSE, FALSE, 0);
 
     // Buttons
     GtkWidget* btnRow = gtk_button_box_new(GTK_ORIENTATION_HORIZONTAL);
@@ -416,6 +554,11 @@ GtkWidget* BuildStatusTab(GuiMainWindow* win) {
     GtkWidget* btnStart   = gtk_button_new_with_label("Start");
     GtkWidget* btnStop    = gtk_button_new_with_label("Stop");
     GtkWidget* btnRestart = gtk_button_new_with_label("Restart");
+    gtk_style_context_add_class(gtk_widget_get_style_context(btnStart), "suggested-action");
+    gtk_style_context_add_class(gtk_widget_get_style_context(btnStop), "destructive-action");
+    gtk_widget_set_tooltip_text(btnStart, "Start the InputFlow background service");
+    gtk_widget_set_tooltip_text(btnStop, "Stop the InputFlow background service");
+    gtk_widget_set_tooltip_text(btnRestart, "Reload settings by restarting the service");
     g_signal_connect(btnStart,   "clicked", G_CALLBACK(OnStartService),   win);
     g_signal_connect(btnStop,    "clicked", G_CALLBACK(OnStopService),    win);
     g_signal_connect(btnRestart, "clicked", G_CALLBACK(OnRestartService), win);
@@ -426,7 +569,8 @@ GtkWidget* BuildStatusTab(GuiMainWindow* win) {
 
     // Peers (live status from saved state: connected now / last seen)
     GtkWidget* peersHeaderRow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget* peersHeader = MakeLabel("Peers:");
+    GtkWidget* peersHeader = MakeLabel("Connected peers");
+    gtk_style_context_add_class(gtk_widget_get_style_context(peersHeader), "inputflow-section-title");
     gtk_box_pack_start(GTK_BOX(peersHeaderRow), peersHeader, FALSE, FALSE, 0);
     GtkWidget* refreshPeersBtn = gtk_button_new_with_label("Refresh");
     gtk_widget_set_halign(refreshPeersBtn, GTK_ALIGN_END);
@@ -440,12 +584,15 @@ GtkWidget* BuildStatusTab(GuiMainWindow* win) {
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(peersScroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_widget_set_size_request(peersScroll, -1, 110);
+    gtk_style_context_add_class(gtk_widget_get_style_context(peersScroll), "inputflow-panel");
     gtk_container_add(GTK_CONTAINER(peersScroll), win->peersList);
     gtk_box_pack_start(GTK_BOX(box), peersScroll, FALSE, FALSE, 0);
     RefreshPeersList(win);
 
     // Log
-    gtk_box_pack_start(GTK_BOX(box), MakeLabel("Recent events:"), FALSE, FALSE, 0);
+    GtkWidget* eventsHeader = MakeLabel("Recent events");
+    gtk_style_context_add_class(gtk_widget_get_style_context(eventsHeader), "inputflow-section-title");
+    gtk_box_pack_start(GTK_BOX(box), eventsHeader, FALSE, FALSE, 0);
     win->logBuf = gtk_text_buffer_new(nullptr);
     win->logView = gtk_text_view_new_with_buffer(win->logBuf);
     gtk_text_view_set_editable(GTK_TEXT_VIEW(win->logView), FALSE);
@@ -712,8 +859,10 @@ GuiMainWindow* CreateMainWindow(const AppConfig& config,
 
     win->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(win->window), "InputFlow");
-    gtk_window_set_default_size(GTK_WINDOW(win->window), 560, 500);
+    gtk_window_set_default_size(GTK_WINDOW(win->window), 720, 620);
     gtk_window_set_resizable(GTK_WINDOW(win->window), TRUE);
+    InstallDesignSystem(win->window);
+    atk_object_set_name(gtk_widget_get_accessible(win->window), "InputFlow controller");
 
     g_signal_connect(win->window, "delete-event",
         G_CALLBACK(+[](GtkWidget* w, GdkEvent*, gpointer) -> gboolean {
@@ -725,18 +874,18 @@ GuiMainWindow* CreateMainWindow(const AppConfig& config,
     gtk_container_add(GTK_CONTAINER(win->window), win->notebook);
 
     gtk_notebook_append_page(GTK_NOTEBOOK(win->notebook),
-        BuildStatusTab(win), gtk_label_new("Status"));
+        BuildStatusTab(win), gtk_label_new("Connection"));
     gtk_notebook_append_page(GTK_NOTEBOOK(win->notebook),
         BuildSettingsTab(win, config), gtk_label_new("Settings"));
     gtk_notebook_append_page(GTK_NOTEBOOK(win->notebook),
-        BuildMonitorTab(win, config), gtk_label_new("Monitor Layout"));
+        BuildMonitorTab(win, config), gtk_label_new("Monitor layout"));
     gtk_notebook_append_page(GTK_NOTEBOOK(win->notebook),
         BuildAndroidTab(win, config), gtk_label_new("Android"));
 
     ApplyModeSensitivity(win);
 
     gtk_widget_show_all(win->window);
-    gtk_notebook_set_current_page(GTK_NOTEBOOK(win->notebook), 2);
+    gtk_notebook_set_current_page(GTK_NOTEBOOK(win->notebook), 0);
     return win;
 }
 
@@ -752,6 +901,7 @@ void GuiMainWindow::UpdateStatus(const std::string& state, const std::string& de
         else if (state == "failed")     text = "Error";
         else                            text = state.empty() ? "Unknown" : state;
         gtk_label_set_text(GTK_LABEL(stateLabel), text.c_str());
+        atk_object_set_name(gtk_widget_get_accessible(dotArea), text.c_str());
     }
     if (detailLabel && !detail.empty()) {
         gtk_label_set_text(GTK_LABEL(detailLabel), detail.c_str());

@@ -42,8 +42,8 @@ public:
     virtual bool WritePayload(const ClipboardPayload& payload) = 0;
     virtual std::string Name() const = 0;
     virtual bool WatchPayloadChanges(
-        const std::atomic<bool>& running,
-        const std::function<void(const ClipboardPayload&)>& onPayloadChange) {
+        const std::atomic<bool>&,
+        const std::function<void(const ClipboardPayload&)>&) {
         return false;
     }
 };

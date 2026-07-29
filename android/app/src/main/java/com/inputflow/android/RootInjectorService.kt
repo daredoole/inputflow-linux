@@ -15,9 +15,9 @@ class RootInjectorService : RootService() {
         SystemInject.exempt()
         return object : IInjectorService.Stub() {
             override fun ping(): Boolean = true
-            override fun inject(event: InputEvent?): Boolean {
+            override fun inject(event: InputEvent?, mode: Int): Boolean {
                 val e = event ?: return false
-                return SystemInject.inject(this@RootInjectorService, e)
+                return SystemInject.inject(this@RootInjectorService, e, mode)
             }
         }
     }

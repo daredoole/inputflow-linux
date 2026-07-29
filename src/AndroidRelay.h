@@ -1,10 +1,12 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -21,6 +23,7 @@ struct AndroidRelayOptions {
     bool layoutEditorEnabled{true};
     int androidDeviceWidth{1920};
     int androidDeviceHeight{1200};
+    bool notificationSyncEnabled{false};
 };
 
 class AndroidRelayServer {
@@ -41,6 +44,10 @@ public:
     // Called after ready to populate the devices_info frame sent to Android.
     void SetLocalDeviceInfo(const std::string& machineName, int screenWidth, int screenHeight);
 
+    // Relays a desktop-typed inline reply back to Android, which fires the
+    // originating notification's RemoteInput to actually send the message.
+    void DeliverNotificationReply(const std::string& stableId, const std::string& text);
+
     const AndroidRelayOptions& Options() const {
         return m_options;
     }
@@ -49,7 +56,12 @@ private:
     struct ClientSession {
         int fd{-1};
         bool authenticated{false};
+        bool encryptionReady{false};
         std::string deviceName;
+        std::array<unsigned char, 32> readKey{};
+        std::array<unsigned char, 32> writeKey{};
+        uint64_t readSequence{0};
+        uint64_t writeSequence{0};
         std::mutex writeMutex;
     };
 
@@ -80,5 +92,24 @@ std::string BuildAndroidMouseFrame(const MouseData& mouse);
 std::string BuildAndroidKeyboardFrame(const KeyboardData& keyboard);
 std::string BuildAndroidGestureFrame(const std::string& kind, double dx, double dy);
 std::string BuildAndroidControlFrame(bool active);
+std::string BuildAndroidNotificationReplyFrame(const std::string& stableId, const std::string& text);
+bool VerifyAndroidRelayHmac(
+    const std::string& secret,
+    const std::string& nonce,
+    const std::string& suppliedHmac);
+#if defined(MWB_TESTING)
+std::optional<std::string> EncryptAndroidRelayFrameForTest(
+    const std::string& payload,
+    const std::string& secret,
+    const std::string& nonce,
+    uint64_t sequence,
+    bool serverToClient);
+std::optional<std::string> DecryptAndroidRelayFrameForTest(
+    const std::string& envelope,
+    const std::string& secret,
+    const std::string& nonce,
+    uint64_t expectedSequence,
+    bool serverToClient);
+#endif
 
 } // namespace mwb

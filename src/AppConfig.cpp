@@ -1,4 +1,5 @@
 #include "AppConfig.h"
+#include "SecureFile.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -501,6 +502,16 @@ bool ParseAppConfig(std::string_view text, AppConfig& outConfig, std::string* er
             continue;
         }
 
+        if (key == "notification_sync_enabled" || key == "notifications_sync_enabled") {
+            const auto parsed = ParseConfigBool(value);
+            if (!parsed.has_value()) {
+                SetError(errorMessage, "Config key 'notification_sync_enabled' expects true/false.");
+                return false;
+            }
+            outConfig.notificationSyncEnabled = *parsed;
+            continue;
+        }
+
         SetError(errorMessage, "Unknown config key '" + std::string(key) + "' on line " + std::to_string(lineNumber) + ".");
         return false;
     }
@@ -577,6 +588,7 @@ std::string RenderAppConfig(const AppConfig& config) {
     out << "android_layout_editor_enabled=" << RenderBool(config.androidLayoutEditorEnabled) << '\n';
     out << "android_device_width=" << config.androidDeviceWidth << '\n';
     out << "android_device_height=" << config.androidDeviceHeight << '\n';
+    out << "notification_sync_enabled=" << RenderBool(config.notificationSyncEnabled) << '\n';
     return out.str();
 }
 
@@ -599,6 +611,7 @@ std::string RenderSampleAppConfig() {
     out << "# Set topology_enabled=true and topology_file=... to enable runtime topology handoff.\n";
     out << "# Set android_peers_enabled=true with android_relay_secret=... to relay input to Android peers.\n";
     out << "# android_capture_backend=none keeps Android relay-only; evdev is prototype-only; libei is the planned KDE/Wayland backend.\n";
+    out << "# Set notification_sync_enabled=true to mirror Android notifications to this desktop over the Android relay.\n";
     out << RenderAppConfig(sample);
     return out.str();
 }
@@ -606,40 +619,11 @@ std::string RenderSampleAppConfig() {
 bool WriteAppConfig(const std::filesystem::path& path,
                     const AppConfig& config,
                     std::string* errorMessage) {
-    try {
-        const std::filesystem::path parent = path.parent_path();
-        if (!parent.empty()) {
-            std::filesystem::create_directories(parent);
-        }
-
-        std::ofstream file(path, std::ios::out | std::ios::trunc);
-        if (!file) {
-            SetError(errorMessage, "Failed to open config file for writing: " + path.string());
-            return false;
-        }
-
-        file << RenderAppConfig(config);
-        if (!file) {
-            SetError(errorMessage, "Failed to write config file: " + path.string());
-            return false;
-        }
-        file.close();
-
-        std::error_code permissionError;
-        std::filesystem::permissions(
-            path,
-            std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-            std::filesystem::perm_options::replace,
-            permissionError);
-        if (permissionError) {
-            SetError(errorMessage, "Failed to secure config file permissions for '" + path.string() + "': " + permissionError.message());
-            return false;
-        }
-    } catch (const std::exception& ex) {
-        SetError(errorMessage, "Failed to write config file '" + path.string() + "': " + ex.what());
+    std::string writeError;
+    if (!WritePrivateFileAtomically(path, RenderAppConfig(config), writeError)) {
+        SetError(errorMessage, writeError);
         return false;
     }
-
     return true;
 }
 

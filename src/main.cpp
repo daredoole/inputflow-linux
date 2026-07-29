@@ -24,6 +24,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -128,8 +129,41 @@ std::filesystem::path DefaultUserServicePath() {
     return std::filesystem::current_path() / "mwb-client.service";
 }
 
-bool CommandSucceeds(const std::string& command) {
-    return std::system((command + " >/dev/null 2>&1").c_str()) == 0;
+bool CommandSucceeds(std::initializer_list<const char*> command) {
+    if (command.size() == 0) {
+        return false;
+    }
+    std::vector<char*> argv;
+    argv.reserve(command.size() + 1);
+    for (const char* argument : command) {
+        argv.push_back(const_cast<char*>(argument));
+    }
+    argv.push_back(nullptr);
+
+    const pid_t child = fork();
+    if (child < 0) {
+        return false;
+    }
+    if (child == 0) {
+        const int devNull = open("/dev/null", O_RDWR);
+        if (devNull >= 0) {
+            dup2(devNull, STDOUT_FILENO);
+            dup2(devNull, STDERR_FILENO);
+            if (devNull > STDERR_FILENO) {
+                close(devNull);
+            }
+        }
+        execvp(argv.front(), argv.data());
+        _exit(127);
+    }
+
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR) {
+            return false;
+        }
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
 std::string GroupName(gid_t gid) {
@@ -990,9 +1024,7 @@ std::optional<std::string> TryRecoverHostFromKnownPeers(const mwb::AppConfig& co
     const auto knownPeerHosts = mwb::CollectRecoveryCandidateHosts(state, config.host, config.port);
     for (const auto& host : knownPeerHosts) {
         if (auto reachable = ProbeReachableIpv4Host(host, config.port, 250)) {
-            std::cout << "[RECOVERY] Configured peer " << config.host
-                      << " has a verified same-name address "
-                      << *reachable;
+            std::cout << "[RECOVERY] Found a verified approved peer address";
             if (configuredHostIsIpv4) {
                 std::cout << "; using name-priority recovery before trusting the configured IP";
             } else {
@@ -1020,16 +1052,12 @@ std::optional<std::string> TryRecoverHostFromKnownPeers(const mwb::AppConfig& co
                 !mwb::HostLabelsMatch(candidate.hostName, config.host)) {
                 continue;
             }
-            std::cout << "[RECOVERY] Configured peer " << config.host
-                      << " resolved by LAN discovery to "
-                      << candidate.ipAddress << " (name=" << candidate.hostName << ")" << std::endl;
+            std::cout << "[RECOVERY] Resolved the approved peer through LAN discovery." << std::endl;
             return candidate.ipAddress;
         }
     }
     for (const auto& host : mwb::CollectRecoveryDiscoveredHosts(state, config.host, config.port, candidates)) {
-        std::cout << "[RECOVERY] Configured peer " << config.host
-                  << " is unavailable; using discovered address "
-                  << host << " for the approved peer name" << std::endl;
+        std::cout << "[RECOVERY] Using the verified address of an approved peer." << std::endl;
         return host;
     }
 
@@ -1240,6 +1268,7 @@ int RunClient(const mwb::AppConfig& config,
     options.androidRelay.layoutEditorEnabled = runtimeConfig.androidLayoutEditorEnabled;
     options.androidRelay.androidDeviceWidth = runtimeConfig.androidDeviceWidth;
     options.androidRelay.androidDeviceHeight = runtimeConfig.androidDeviceHeight;
+    options.androidRelay.notificationSyncEnabled = runtimeConfig.notificationSyncEnabled;
     options.onSessionEstablished = [&](const std::string& host, int port, const std::string& remoteName, uint32_t, uint32_t localMachineId) {
         std::lock_guard<std::mutex> lock(stateMutex);
         mwb::MarkSessionEstablished(state, host, port, remoteName, localMachineId, CurrentEpochSeconds());
@@ -1745,6 +1774,8 @@ int HandleDoctorCommand(const std::vector<std::string>& args) {
             " port=" + std::to_string(config.androidRelayPort) +
             " peer=" + (config.androidPeerName.empty() ? "<unset>" : config.androidPeerName) +
             " secret=" + (config.androidRelaySecret.empty() ? "missing" : "configured"));
+        PrintDoctorLine("INFO", "notification sync",
+            config.notificationSyncEnabled ? "enabled" : "disabled");
         PrintDoctorLine("INFO", "reconnect", "initial=" + std::to_string(config.reconnectInitialBackoffMs) +
             "ms max=" + std::to_string(config.reconnectMaxBackoffMs) +
             "ms idle=" + std::to_string(config.reconnectIdleRetryMs) + "ms");
@@ -1874,7 +1905,9 @@ int HandleDoctorCommand(const std::vector<std::string>& args) {
 
     if (!FindExecutableInPath("busctl")) {
         PrintDoctorLine("INFO", "xdg portal", "busctl unavailable; portal service not checked");
-    } else if (CommandSucceeds("busctl --user --no-pager status org.freedesktop.portal.Desktop")) {
+        } else if (CommandSucceeds(
+                       {"busctl", "--user", "--no-pager", "status",
+                        "org.freedesktop.portal.Desktop"})) {
         PrintDoctorLine("OK", "xdg portal", "org.freedesktop.portal.Desktop is reachable");
     } else if (FileExistsAny({"/usr/libexec/xdg-desktop-portal", "/usr/lib/xdg-desktop-portal"})) {
         PrintDoctorLine("WARN", "xdg portal", "portal executable is installed but the user service is not reachable");
@@ -1885,11 +1918,13 @@ int HandleDoctorCommand(const std::vector<std::string>& args) {
     const std::filesystem::path unitPath = DefaultUserServicePath();
     PrintDoctorLine(std::filesystem::exists(unitPath) ? "OK" : "INFO", "user service", unitPath.string());
     if (FindExecutableInPath("systemctl")) {
-        if (!CommandSucceeds("systemctl --user show-environment")) {
+    if (!CommandSucceeds({"systemctl", "--user", "show-environment"})) {
             PrintDoctorLine("WARN", "service state", "systemctl --user is unavailable in this environment");
-        } else if (CommandSucceeds("systemctl --user is-active --quiet mwb-client.service")) {
+    } else if (CommandSucceeds(
+                   {"systemctl", "--user", "is-active", "--quiet", "mwb-client.service"})) {
             PrintDoctorLine("OK", "service state", "mwb-client.service is active");
-        } else if (CommandSucceeds("systemctl --user is-enabled --quiet mwb-client.service")) {
+    } else if (CommandSucceeds(
+                   {"systemctl", "--user", "is-enabled", "--quiet", "mwb-client.service"})) {
             PrintDoctorLine("INFO", "service state", "mwb-client.service is enabled but not active");
         } else {
             PrintDoctorLine("INFO", "service state", "mwb-client.service is not active/enabled for this user");
@@ -2189,8 +2224,9 @@ int HandleExportWindowsPairCommand(const std::vector<std::string>& args) {
     } else if (const auto detected = DetectOutboundLocalIpv4(config.host, config.port); detected.has_value()) {
         linuxIp = *detected;
     } else {
-        std::cerr << "ERR: Failed to detect the Linux IPv4 address for host '" << config.host
-                  << "'. Pass --linux-ip explicitly." << std::endl;
+        std::cerr << "ERR: Failed to detect the Linux IPv4 address for the configured host. "
+                     "Pass --linux-ip explicitly."
+                  << std::endl;
         return 1;
     }
 
@@ -2544,7 +2580,7 @@ int HandleInstallUserServiceCommand(const std::vector<std::string>& args) {
         << "[Service]\n"
         << "Type=simple\n"
         << "ExecStart=" << executablePath.string() << " run --config " << configPath.string() << "\n"
-        << "Restart=always\n"
+        << "Restart=on-failure\n"
         << "RestartSec=3\n\n"
         << "[Install]\n"
         << "WantedBy=default.target\n";

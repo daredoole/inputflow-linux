@@ -13,6 +13,7 @@
 #include <ifaddrs.h>
 #include <memory>
 #include <net/if.h>
+#include <optional>
 #include <poll.h>
 #include <set>
 #include <sstream>
@@ -24,10 +25,72 @@
 
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace mwb {
 namespace {
+
+std::optional<std::string> RunCommandCapture(const std::vector<std::string>& argv) {
+    if (argv.empty()) {
+        return std::nullopt;
+    }
+    int outputPipe[2]{-1, -1};
+    if (pipe(outputPipe) != 0) {
+        return std::nullopt;
+    }
+    const pid_t child = fork();
+    if (child < 0) {
+        close(outputPipe[0]);
+        close(outputPipe[1]);
+        return std::nullopt;
+    }
+    if (child == 0) {
+        close(outputPipe[0]);
+        dup2(outputPipe[1], STDOUT_FILENO);
+        if (outputPipe[1] > STDERR_FILENO) {
+            close(outputPipe[1]);
+        }
+        const int devNull = open("/dev/null", O_WRONLY);
+        if (devNull >= 0) {
+            dup2(devNull, STDERR_FILENO);
+            if (devNull > STDERR_FILENO) {
+                close(devNull);
+            }
+        }
+        std::vector<char*> args;
+        args.reserve(argv.size() + 1);
+        for (const auto& argument : argv) {
+            args.push_back(const_cast<char*>(argument.c_str()));
+        }
+        args.push_back(nullptr);
+        execv(args.front(), args.data());
+        _exit(127);
+    }
+
+    close(outputPipe[1]);
+    std::string output;
+    std::array<char, 1024> buffer{};
+    while (output.size() < 64 * 1024) {
+        const ssize_t count = read(outputPipe[0], buffer.data(), buffer.size());
+        if (count > 0) {
+            output.append(buffer.data(), static_cast<std::size_t>(count));
+            continue;
+        }
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
+        break;
+    }
+    close(outputPipe[0]);
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
+    }
+    if (output.empty()) {
+        return std::nullopt;
+    }
+    return output;
+}
 
 constexpr std::size_t kAbsoluteMaxHostsPerSubnet = 4096;
 constexpr std::size_t kAbsoluteMaxConcurrentProbes = 128;
@@ -279,18 +342,18 @@ std::string AvahiResolveAddress(uint32_t address) {
     }
 
     const std::string ipAddress = FormatIpv4Address(address);
-    const std::string command = std::string(kTimeoutPath) + " 1s " + kAvahiResolveAddressPath + " -4 -a " + ipAddress + " 2>/dev/null";
-    std::unique_ptr<FILE, int (*)(FILE*)> pipe(popen(command.c_str(), "r"), pclose);
-    if (!pipe) {
+    const auto output = RunCommandCapture(
+        {kTimeoutPath, "1s", kAvahiResolveAddressPath, "-4", "-a", ipAddress});
+    if (!output.has_value()) {
         return {};
     }
 
-    std::array<char, 512> buffer{};
-    if (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) == nullptr) {
+    std::istringstream lines(*output);
+    std::string line;
+    if (!std::getline(lines, line)) {
         return {};
     }
 
-    std::string line(buffer.data());
     const std::size_t separator = line.find_first_of(" \t");
     if (separator == std::string::npos) {
         return {};
@@ -312,17 +375,17 @@ std::string NmblookupResolveAddress(uint32_t address, int timeoutMs) {
 
     const std::string ipAddress = FormatIpv4Address(address);
     const int timeoutSeconds = std::max(1, (std::min(timeoutMs, 3000) + 999) / 1000);
-    const std::string command = std::string(kTimeoutPath) + " " + std::to_string(timeoutSeconds) + "s " +
-        kNmblookupPath + " -A " + ipAddress + " 2>/dev/null";
-    std::unique_ptr<FILE, int (*)(FILE*)> pipe(popen(command.c_str(), "r"), pclose);
-    if (!pipe) {
+    const auto output = RunCommandCapture(
+        {kTimeoutPath, std::to_string(timeoutSeconds) + "s", kNmblookupPath, "-A", ipAddress});
+    if (!output.has_value()) {
         return {};
     }
 
-    std::array<char, 512> buffer{};
+    std::istringstream lines(*output);
     std::string fallbackName;
-    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr) {
-        const std::string line = TrimDiscoveredName(buffer.data());
+    std::string rawLine;
+    while (std::getline(lines, rawLine)) {
+        const std::string line = TrimDiscoveredName(rawLine);
         if (line.find("<GROUP>") != std::string::npos) {
             continue;
         }

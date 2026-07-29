@@ -1,7 +1,10 @@
 <resources>
+    <string name="default_device_name">Android device</string>
+    <string name="secret_storage_error">Could not protect the pairing secret on this device.</string>
     <string name="app_name">InputFlow</string>
     <string name="accessibility_label">InputFlow controlled peer</string>
     <string name="ime_label">InputFlow keyboard</string>
+    <string name="notification_listener_label">InputFlow notification sync</string>
 
     <!-- Main screen -->
     <string name="status_connected">Connected</string>
@@ -44,6 +47,16 @@
     <string name="settings_mode_direct">Direct InputFlow (Linux host)</string>
     <string name="mode_help_powertoys">Windows runs PowerToys Mouse Without Borders. InputFlow on Linux captures that stream and relays input to this device.</string>
     <string name="mode_help_direct">InputFlow on Linux is the primary source. No Windows or PowerToys needed. The Linux machine relays keyboard and mouse directly to this device.</string>
+    <string name="section_notifications">Notifications</string>
+    <string name="settings_notification_sync">Sync Android notifications</string>
+    <string name="settings_notification_sync_hint">Mirrors allowed Android notifications to connected InputFlow desktops. Sensitive-looking messages are skipped.</string>
+    <string name="btn_send_test_notification">Send test notification</string>
+    <string name="test_notification_title">InputFlow test notification</string>
+    <string name="test_notification_body">If this appears on your desktop, notification sync is working.</string>
+    <string name="test_notification_sent">Test notification sent to desktop.</string>
+    <string name="test_notification_failed">Could not send test notification.</string>
+    <string name="test_notification_not_connected">Connect to InputFlow before sending a test.</string>
+    <string name="test_notification_enable_sync">Enable notification sync first.</string>
     <string name="section_layout">Device layout</string>
     <string name="btn_edit_layout">Edit Device Layout</string>
     <string name="layout_editor_hint">Drag devices to set their position relative to each other. The green device is this tablet.</string>
@@ -62,4 +75,26 @@
     <string name="btn_apply_layout">Apply Layout</string>
     <string name="editor_this_device">This Device</string>
     <string name="editor_not_connected">Connect to InputFlow first to load device list</string>
+    <string name="sensitivity_minimum">0.5×</string>
+    <string name="sensitivity_maximum">3×</string>
+    <string name="section_input_method">Input method</string>
+    <string name="input_method_auto">Auto (best available)</string>
+    <string name="input_method_accessibility">Accessibility (no root, basic)</string>
+    <string name="input_method_shizuku">Shizuku (no root, native)</string>
+    <string name="input_method_root">Root (native)</string>
+    <string name="grant_shizuku">Grant Shizuku</string>
+    <string name="grant_root">Grant Root</string>
+    <string name="native_input_consent">Allow native input injection (system-level control)</string>
+    <string name="shizuku_not_running">Shizuku is not running. Install and start Shizuku first.</string>
+    <string name="shizuku_permission_requested">Shizuku permission requested. Approve it, then reopen Settings.</string>
+    <string name="shizuku_error">Shizuku could not be reached.</string>
+    <string name="root_requesting">Requesting root…</string>
+    <string name="root_granted">Root granted.</string>
+    <string name="root_denied">Root denied.</string>
+    <string name="injection_ready">ready</string>
+    <string name="injection_unavailable">unavailable</string>
+    <string name="injection_status">Shizuku: %1$s    Root: %2$s</string>
+    <string name="port_number" translatable="false">%1$d</string>
+    <string name="menu_settings">Settings</string>
+    <string name="shortcut_none">None</string>
 </resources>

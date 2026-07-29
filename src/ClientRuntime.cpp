@@ -699,6 +699,12 @@ void ClientRuntime::StartLocalAndroidInputBridge(const ScreenSize& screenSize) {
     options.sendMouse = [this](const MouseData& mouse) {
         return TrySendAndroidMouse(mouse);
     };
+    options.sendGesture = [this](const std::string& kind, double dx, double dy) {
+        return TrySendAndroidGesture(kind, dx, dy);
+    };
+    options.sendControl = [this](bool active) {
+        return TrySetAndroidControlActive(active);
+    };
 
     m_localAndroidInputBridge = std::make_unique<LocalAndroidInputBridge>(std::move(options));
     m_localAndroidInputBridge->Start();

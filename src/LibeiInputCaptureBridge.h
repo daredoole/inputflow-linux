@@ -11,6 +11,11 @@
 
 namespace mwb {
 
+// The portal handshake can display an interactive desktop permission dialog.
+// Never repeat it automatically: a timeout or dismissal must require an
+// explicit service restart before another prompt is requested.
+inline constexpr int kLibeiInputCaptureAutomaticSetupAttempts = 1;
+
 struct LibeiInputCaptureBridgeOptions {
     int desktopWidth{0};
     int desktopHeight{0};

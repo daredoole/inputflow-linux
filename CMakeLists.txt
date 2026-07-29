@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
-project(mwb_client CXX)
+project(mwb_client VERSION 0.2.0 LANGUAGES CXX)
+
+include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,6 +52,7 @@ add_executable(mwb_client
     src/main.cpp
     src/PeerRecovery.cpp
     src/SecretStore.cpp
+    src/SecureFile.cpp
     src/TopologyModel.cpp
     src/ClipboardManager.cpp
     src/CryptoHelper.cpp
@@ -120,8 +123,10 @@ if (BUILD_TESTING)
         src/AppState.cpp
         src/Discovery.cpp
         src/PeerRecovery.cpp
+        src/SecureFile.cpp
     )
     target_include_directories(mwb_client_unit_tests PRIVATE src)
+    target_compile_definitions(mwb_client_unit_tests PRIVATE MWB_TESTING=1)
     target_compile_options(mwb_client_unit_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_link_libraries(mwb_client_unit_tests PRIVATE OpenSSL::Crypto pthread)
     mwb_apply_sanitizers(mwb_client_unit_tests)
@@ -243,6 +248,13 @@ if (BUILD_TESTING)
     )
     add_test(NAME mwb_client_doctor_invalid_config COMMAND mwb_client doctor --config "${CMAKE_CURRENT_SOURCE_DIR}/tests/invalid_config.ini")
     set_tests_properties(mwb_client_doctor_invalid_config PROPERTIES WILL_FAIL TRUE)
+    add_test(
+        NAME inputflow_diagnostics_privacy
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_diagnostics_privacy.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/inputflow-diagnostics-bundle.sh"
+    )
+    set_tests_properties(inputflow_diagnostics_privacy PROPERTIES TIMEOUT 30)
 endif()
 
 if (PkgConfig_FOUND)
@@ -263,3 +275,61 @@ if (PkgConfig_FOUND)
         mwb_apply_sanitizers(mwb_tray)
     endif()
 endif()
+
+install(TARGETS mwb_client RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+if (TARGET mwb_tray)
+    install(TARGETS mwb_tray RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
+install(
+    PROGRAMS packaging/portable/inputflow-controller
+    DESTINATION "${CMAKE_INSTALL_BINDIR}"
+)
+install(
+    PROGRAMS mwb-desktop-ui.sh
+    DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/inputflow"
+)
+install(
+    PROGRAMS scripts/inputflow-diagnostics-bundle.sh
+    DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/inputflow/scripts"
+)
+install(
+    FILES packaging/usr/lib/systemd/user/mwb-client.service
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/systemd/user"
+)
+install(
+    FILES
+        packaging/usr/lib/modules-load.d/mwb-client-uinput.conf
+        packaging/usr/lib/udev/rules.d/70-mwb-client-uinput.rules
+        packaging/usr/lib/sysusers.d/mwb-client.conf
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/inputflow/system-integration"
+)
+install(
+    FILES packaging/usr/share/applications/inputflow.desktop
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
+)
+install(DIRECTORY assets/hicolor/ DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor")
+install(
+    FILES
+        README.md
+        SECURITY.md
+        LICENSE
+        docs/compatibility.md
+        docs/security-privacy.md
+        docs/public-repository-audit.md
+        docs/release-checklist.md
+        docs/release-readiness-report.md
+        packaging/portable/README.md
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}"
+)
+
+set(CPACK_GENERATOR "TGZ")
+set(CPACK_PACKAGE_NAME "inputflow")
+set(CPACK_PACKAGE_VENDOR "InputFlow")
+set(CPACK_PACKAGE_CONTACT "InputFlow maintainers")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Trusted-LAN Linux client for PowerToys Mouse Without Borders")
+set(CPACK_PACKAGE_FILE_NAME
+    "inputflow-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}"
+)
+set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+set(CPACK_PACKAGE_CHECKSUM "SHA256")
+include(CPack)

@@ -32,7 +32,10 @@ class InputFlowImeService : InputMethodService() {
         super.onDestroy()
     }
 
-    override fun onEvaluateInputViewShown(): Boolean = false
+    override fun onEvaluateInputViewShown(): Boolean {
+        super.onEvaluateInputViewShown()
+        return false
+    }
 
     override fun onCreateInputView(): View {
         return View(this)
@@ -83,7 +86,6 @@ class InputFlowImeService : InputMethodService() {
             is InputAction.ModifiedKey -> sendModifiedKey(connection, action.keyCode, action.metaState)
             is InputAction.Menu -> connection.performContextMenuAction(action.id)
         }
-        Log.i(TAG, "keyboard action=${action.name} vk=$vkCode handled=$handled")
         return handled
     }
 

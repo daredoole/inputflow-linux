@@ -7,5 +7,6 @@ import android.view.InputEvent;
 // be injected at system level via InputManager.injectInputEvent.
 interface IInjectorService {
     boolean ping();
-    boolean inject(in InputEvent event);
+    // mode = InputManager.INJECT_INPUT_EVENT_MODE_* (0=ASYNC, 2=WAIT_FOR_FINISH).
+    boolean inject(in InputEvent event, int mode);
 }

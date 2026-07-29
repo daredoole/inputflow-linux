@@ -23,20 +23,32 @@ class NativeInjector(
     private var py = 0f
     private var primed = false
     private var metaState = 0
+    private var primaryDownTime: Long = 0L
+    private var secondaryDownTime: Long = 0L
+    private var tertiaryDownTime: Long = 0L
+    private var leftDown = false
+    private var touchDownTime: Long = 0L
 
     fun ping(): Boolean = try { service.ping() } catch (_: Throwable) { false }
 
-    private fun inject(event: android.view.InputEvent): Boolean =
-        try { service.inject(event) } catch (_: Throwable) { false }
+    private fun inject(
+        event: android.view.InputEvent,
+        mode: Int = SystemInject.MODE_ASYNC,
+    ): Boolean =
+        try {
+            service.inject(event, mode)
+        } catch (_: Throwable) {
+            false
+        }
 
-    fun handleMouse(frame: JSONObject) {
+    fun handleMouse(frame: JSONObject): Boolean {
         val m = metricsProvider()
         if (!primed) {
             px = m.widthPixels / 2f
             py = m.heightPixels / 2f
             primed = true
         }
-        when (frame.optInt("wParam")) {
+        return when (frame.optInt("wParam")) {
             WM_MOUSEMOVE -> {
                 val sens = sensitivityProvider()
                 val baseX = frame.optInt("x") / 65535f * m.widthPixels
@@ -45,24 +57,104 @@ class NativeInjector(
                 val cy = m.heightPixels / 2f
                 px = (cx + (baseX - cx) * sens).coerceIn(0f, m.widthPixels - 1f)
                 py = (cy + (baseY - cy) * sens).coerceIn(0f, m.heightPixels - 1f)
-                inject(pointerEvent(MotionEvent.ACTION_HOVER_MOVE, 0))
+                // While the left button is held, a move is a drag (touch move).
+                if (leftDown) inject(touchEvent(MotionEvent.ACTION_MOVE)) else true
             }
-            WM_LBUTTONUP -> click(MotionEvent.BUTTON_PRIMARY)
-            WM_RBUTTONUP -> click(MotionEvent.BUTTON_SECONDARY)
-            WM_MBUTTONUP -> click(MotionEvent.BUTTON_TERTIARY)
+            // Left click = a real touchscreen tap (down/up) — the reliable path that
+            // registers in every app, exactly like `input tap`. Down→move→up = drag.
+            // Synchronous injection (WAIT_FOR_FINISH) guarantees the DOWN is fully
+            // dispatched before the UP, and a minimum down→up interval is enforced so
+            // the framework's tap detector never sees a zero-duration (ignored) tap.
+            WM_LBUTTONDOWN -> {
+                leftDown = true
+                touchDownTime = SystemClock.uptimeMillis()
+                inject(touchEvent(MotionEvent.ACTION_DOWN), SystemInject.MODE_WAIT_FOR_FINISH)
+            }
+            WM_LBUTTONUP -> {
+                val held = SystemClock.uptimeMillis() - touchDownTime
+                if (held < MIN_TAP_DURATION_MS) {
+                    try { Thread.sleep(MIN_TAP_DURATION_MS - held) } catch (_: InterruptedException) {}
+                }
+                val ok = inject(touchEvent(MotionEvent.ACTION_UP), SystemInject.MODE_WAIT_FOR_FINISH)
+                leftDown = false
+                ok
+            }
+            WM_RBUTTONDOWN -> button(MotionEvent.BUTTON_SECONDARY, down = true)
+            WM_RBUTTONUP -> button(MotionEvent.BUTTON_SECONDARY, down = false)
+            WM_MBUTTONDOWN -> button(MotionEvent.BUTTON_TERTIARY, down = true)
+            WM_MBUTTONUP -> button(MotionEvent.BUTTON_TERTIARY, down = false)
             WM_MOUSEWHEEL -> scroll(frame.optInt("mouseData"))
+            else -> false
         }
     }
 
-    private fun click(button: Int) {
-        val down = SystemClock.uptimeMillis()
-        inject(pointerEvent(MotionEvent.ACTION_DOWN, button, down, down))
-        inject(pointerEvent(MotionEvent.ACTION_BUTTON_PRESS, button, down, down))
-        inject(pointerEvent(MotionEvent.ACTION_BUTTON_RELEASE, 0, down, SystemClock.uptimeMillis()))
-        inject(pointerEvent(MotionEvent.ACTION_UP, 0, down, SystemClock.uptimeMillis()))
+    private fun touchEvent(action: Int): MotionEvent {
+        val now = SystemClock.uptimeMillis()
+        val props = MotionEvent.PointerProperties().apply {
+            id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER
+        }
+        val coords = MotionEvent.PointerCoords().apply {
+            x = px; y = py; pressure = 1f; size = 1f
+        }
+        return MotionEvent.obtain(
+            touchDownTime, now, action, 1,
+            arrayOf(props), arrayOf(coords), 0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0)
     }
 
-    private fun scroll(mouseData: Int) {
+    private fun button(button: Int, down: Boolean): Boolean {
+        val now = SystemClock.uptimeMillis()
+        return if (down) {
+            setButtonDownTime(button, now)
+            val downSent = inject(pointerEvent(MotionEvent.ACTION_DOWN, button, now, now))
+            val pressSent = inject(pointerEvent(MotionEvent.ACTION_BUTTON_PRESS, button, now, now))
+            downSent && pressSent
+        } else {
+            val downTime = getButtonDownTime(button).takeIf { it != 0L } ?: now
+            setButtonDownTime(button, 0L)
+            val releaseSent = inject(pointerEvent(MotionEvent.ACTION_BUTTON_RELEASE, 0, downTime, now))
+            val upSent = inject(pointerEvent(MotionEvent.ACTION_UP, 0, downTime, now))
+            releaseSent && upSent
+        }
+    }
+
+    private fun getButtonDownTime(button: Int): Long = when (button) {
+        MotionEvent.BUTTON_PRIMARY -> primaryDownTime
+        MotionEvent.BUTTON_SECONDARY -> secondaryDownTime
+        MotionEvent.BUTTON_TERTIARY -> tertiaryDownTime
+        else -> 0L
+    }
+
+    private fun setButtonDownTime(button: Int, value: Long) {
+        when (button) {
+            MotionEvent.BUTTON_PRIMARY -> primaryDownTime = value
+            MotionEvent.BUTTON_SECONDARY -> secondaryDownTime = value
+            MotionEvent.BUTTON_TERTIARY -> tertiaryDownTime = value
+        }
+    }
+
+    /** Continuous trackpad-style scroll at the cursor (native ACTION_SCROLL). */
+    fun scrollBy(dx: Float, dy: Float): Boolean {
+        val now = SystemClock.uptimeMillis()
+        val props = MotionEvent.PointerProperties().apply {
+            id = 0; toolType = MotionEvent.TOOL_TYPE_MOUSE
+        }
+        val coords = MotionEvent.PointerCoords().apply {
+            x = px; y = py; pressure = 1f; size = 1f
+            // Android scroll axes: positive vscroll = away/up. Trackpad dy>0 = down.
+            setAxisValue(MotionEvent.AXIS_VSCROLL, -dy / SCROLL_DIVISOR)
+            setAxisValue(MotionEvent.AXIS_HSCROLL, dx / SCROLL_DIVISOR)
+        }
+        val ev = MotionEvent.obtain(
+            now, now, MotionEvent.ACTION_SCROLL, 1,
+            arrayOf(props), arrayOf(coords), 0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_MOUSE, 0)
+        val sent = inject(ev)
+        ev.recycle()
+        return sent
+    }
+
+    private fun scroll(mouseData: Int): Boolean {
         val now = SystemClock.uptimeMillis()
         val props = MotionEvent.PointerProperties().apply {
             id = 0; toolType = MotionEvent.TOOL_TYPE_MOUSE
@@ -75,8 +167,9 @@ class NativeInjector(
             now, now, MotionEvent.ACTION_SCROLL, 1,
             arrayOf(props), arrayOf(coords), 0, 0, 1f, 1f, 0, 0,
             InputDevice.SOURCE_MOUSE, 0)
-        inject(ev)
+        val sent = inject(ev)
         ev.recycle()
+        return sent
     }
 
     private fun pointerEvent(
@@ -125,10 +218,18 @@ class NativeInjector(
 
     companion object {
         private const val WM_MOUSEMOVE = 0x0200
+        private const val WM_LBUTTONDOWN = 0x0201
         private const val WM_LBUTTONUP = 0x0202
+        private const val WM_RBUTTONDOWN = 0x0204
         private const val WM_RBUTTONUP = 0x0205
+        private const val WM_MBUTTONDOWN = 0x0207
         private const val WM_MBUTTONUP = 0x0208
         private const val WM_MOUSEWHEEL = 0x020A
         private const val LLKHF_UP = 0x80
+        // Trackpad pixel-delta → scroll-unit scale; smaller = faster scroll.
+        private const val SCROLL_DIVISOR = 40f
+        // Minimum DOWN→UP interval (ms) so a tap is never zero-duration. AOSP's
+        // monkey tool uses ~5ms; we use a slightly safer floor.
+        private const val MIN_TAP_DURATION_MS = 12L
     }
 }

@@ -15,7 +15,6 @@
 
 #if defined(MWB_HAVE_LIBEI_INPUT_CAPTURE) || defined(MWB_HAVE_LIBINPUT_GESTURES)
 #include <poll.h>
-#include <unistd.h>
 #endif
 
 #include <algorithm>
@@ -23,6 +22,7 @@
 #include <chrono>
 #include <cctype>
 #include <cstdio>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <cmath>
@@ -31,6 +31,8 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <thread>
 #include <vector>
 
@@ -211,7 +213,11 @@ std::optional<std::string> FindTouchpadEventDevice() {
             break;
         }
         const auto eventName = entry.path().filename().string();
-        if (eventName.rfind("event", 0) != 0) {
+        if (eventName.size() <= 5 ||
+            eventName.rfind("event", 0) != 0 ||
+            !std::all_of(eventName.begin() + 5, eventName.end(), [](unsigned char ch) {
+                return std::isdigit(ch) != 0;
+            })) {
             continue;
         }
         std::ifstream nameFile(entry.path() / "device" / "name");
@@ -254,7 +260,9 @@ bool EmitClassifiedSwipe(
 
     const double absX = std::abs(dx);
     const double absY = std::abs(dy);
-    if (absY < 36.0 || absY < absX * 1.35) {
+    const bool vertical = absY >= 36.0 && absY >= absX * 1.35;
+    const bool horizontal = absX >= 36.0 && absX >= absY * 1.35;
+    if (!vertical && !horizontal) {
         return false;
     }
 
@@ -289,12 +297,13 @@ bool RunNativeLibinputGestureMonitor(
 
     libinput_device* inputDevice = libinput_path_add_device(context, device.c_str());
     if (!inputDevice) {
-        std::cerr << "WARN: Failed to open " << device << " through native libinput." << std::endl;
+        std::cerr << "WARN: Failed to open the selected device through native libinput."
+                  << std::endl;
         libinput_unref(context);
         return false;
     }
 
-    std::cout << "[ANDROID] native libinput gesture monitor using " << device << std::endl;
+    std::cout << "[ANDROID] Native libinput gesture monitor started." << std::endl;
 
     bool swipeActive = false;
     int swipeFingers = 0;
@@ -735,6 +744,22 @@ std::optional<EdgeDirection> DominantEdgeFromDelta(double dx, double dy) {
     return std::nullopt;
 }
 
+// Normalized margin the pointer is seeded *inside* the entry edge when capture
+// engages. Entering exactly on the edge (0 or 65535) sits on the release
+// threshold, so the tiniest opposite jitter would instantly bounce control back
+// to the local desktop. Seeding inside this margin gives the handoff hysteresis.
+constexpr int kEntryMargin = 1500;
+
+int NudgeInward(int value) {
+    if (value <= 0) {
+        return kEntryMargin;
+    }
+    if (value >= 65535) {
+        return 65535 - kEntryMargin;
+    }
+    return value;
+}
+
 bool MovementReturnsToLocal(const CaptureTarget& target, int x, int y, double dx, double dy) {
     switch (target.entryEdge) {
     case EdgeDirection::Left:
@@ -964,55 +989,63 @@ void LibeiInputCaptureBridge::Run() {
         return;
     }
 
-    const auto sessionHandle = CreateSession(connection);
-    if (!sessionHandle.has_value()) {
-        g_object_unref(connection);
-        m_running = false;
-        return;
+    // The xdg-desktop-portal InputCapture handshake can display an interactive
+    // permission dialog. Never repeat the whole handshake automatically: a
+    // timeout or dismissal must not flood the desktop with permission prompts.
+    // A deliberate service restart is the retry action.
+    std::optional<std::string> sessionHandle;
+    std::vector<CaptureTarget> captureTargets;
+    ei* context = nullptr;
+    std::optional<int> eisFd;
+    bool captureReady = false;
+
+    for (int attempt = 1;
+         attempt <= kLibeiInputCaptureAutomaticSetupAttempts && m_running;
+         ++attempt) {
+        sessionHandle = CreateSession(connection);
+        if (sessionHandle.has_value()) {
+            captureTargets = BuildTopologyCaptureTargets(m_options);
+            if (captureTargets.empty()) {
+                captureTargets = BuildFallbackAndroidCaptureTarget(m_options);
+            }
+
+            const auto zone = GetZones(connection, *sessionHandle);
+            if (zone.has_value() &&
+                SetPointerBarriers(connection, *sessionHandle, *zone, captureTargets)) {
+                eisFd = ConnectToEis(connection, *sessionHandle);
+                if (eisFd.has_value()) {
+                    context = ei_new_receiver(this);
+                    if (context && ei_setup_backend_fd(context, *eisFd) >= 0 &&
+                        EnableCapture(connection, *sessionHandle)) {
+                        captureReady = true;
+                        break;
+                    }
+                    if (context) {
+                        ei_unref(context);
+                        context = nullptr;
+                    }
+                    close(*eisFd);
+                    eisFd.reset();
+                }
+            }
+            CloseSession(connection, *sessionHandle);
+            sessionHandle.reset();
+        }
+
     }
 
-    std::vector<CaptureTarget> captureTargets = BuildTopologyCaptureTargets(m_options);
-    if (captureTargets.empty()) {
-        captureTargets = BuildFallbackAndroidCaptureTarget(m_options);
-    }
-
-    const auto zone = GetZones(connection, *sessionHandle);
-    if (!zone.has_value() || !SetPointerBarriers(connection, *sessionHandle, *zone, captureTargets)) {
-        CloseSession(connection, *sessionHandle);
+    if (!captureReady) {
+        if (context) {
+            ei_unref(context);
+        }
+        if (eisFd.has_value()) {
+            close(*eisFd);
+        }
         g_object_unref(connection);
-        m_running = false;
-        return;
-    }
-
-    const auto eisFd = ConnectToEis(connection, *sessionHandle);
-    if (!eisFd.has_value()) {
-        CloseSession(connection, *sessionHandle);
-        g_object_unref(connection);
-        m_running = false;
-        return;
-    }
-
-    ei* context = ei_new_receiver(this);
-    if (!context) {
-        close(*eisFd);
-        CloseSession(connection, *sessionHandle);
-        g_object_unref(connection);
-        m_running = false;
-        return;
-    }
-    if (ei_setup_backend_fd(context, *eisFd) < 0) {
-        std::cerr << "WARN: libei input capture failed to initialize EIS fd." << std::endl;
-        ei_unref(context);
-        CloseSession(connection, *sessionHandle);
-        g_object_unref(connection);
-        m_running = false;
-        return;
-    }
-
-    if (!EnableCapture(connection, *sessionHandle)) {
-        ei_unref(context);
-        CloseSession(connection, *sessionHandle);
-        g_object_unref(connection);
+        std::cerr << "ERROR: libei input capture handshake failed; automatic retry "
+                     "suppressed to avoid repeated permission prompts. Restart InputFlow "
+                     "to try again."
+                  << std::endl;
         m_running = false;
         return;
     }
@@ -1021,7 +1054,6 @@ void LibeiInputCaptureBridge::Run() {
               << " topology barrier(s)." << std::endl;
     int remoteX = captureTargets.front().startX;
     int remoteY = captureTargets.front().startY;
-    int keyboardEventsLogged = 0;
     bool remoteControlActive = false;
     std::optional<CaptureTarget> activeTarget;
     const std::string androidMachineId = m_options.androidPeerName.empty() ? "android" : m_options.androidPeerName;
@@ -1062,8 +1094,8 @@ void LibeiInputCaptureBridge::Run() {
             return false;
         }
         activeTarget = *it;
-        remoteX = activeTarget->startX;
-        remoteY = activeTarget->startY;
+        remoteX = NudgeInward(activeTarget->startX);
+        remoteY = NudgeInward(activeTarget->startY);
         std::cout << "[TOPOLOGY] Captured local pointer through "
                   << edgeDirectionName(activeTarget->exitEdge)
                   << " edge for target " << activeTarget->machineId << "." << std::endl;
@@ -1178,12 +1210,6 @@ void LibeiInputCaptureBridge::Run() {
                 const auto vk = LinuxKeyToVirtualKey(key);
                 if (vk.has_value() && activeTarget.has_value()) {
                     KeyboardData keyboard{*vk, press ? 0u : LLKHF_UP};
-                    if (keyboardEventsLogged < 20) {
-                        std::cout << "[TOPOLOGY] libei keyboard event key=" << key
-                                  << " vk=" << *vk
-                                  << " press=" << (press ? "true" : "false") << std::endl;
-                        ++keyboardEventsLogged;
-                    }
                     sendKeyboard(keyboard);
                 }
                 break;
@@ -1222,15 +1248,64 @@ void LibeiInputCaptureBridge::RunLibinputGestureMonitor() {
     std::cerr << "WARN: Falling back to libinput debug-events gesture parser." << std::endl;
 #endif
 
-    std::cout << "[ANDROID] libinput gesture monitor using " << *device << std::endl;
+    std::cout << "[ANDROID] Libinput gesture monitor started." << std::endl;
     while (m_running) {
-        const std::string command =
-            "sh -c 'for fd in /proc/$$/fd/[3-9]*; do "
-            "[ -e \"$fd\" ] && eval \"exec ${fd##*/}<&-\"; "
-            "done; exec timeout 1s libinput debug-events --device " + *device + " 2>/dev/null'";
-        FILE* pipe = popen(command.c_str(), "r");
-        if (!pipe) {
+        constexpr const char* timeoutPath = "/usr/bin/timeout";
+        constexpr const char* libinputPath = "/usr/bin/libinput";
+        if (access(timeoutPath, X_OK) != 0 || access(libinputPath, X_OK) != 0) {
+            std::cerr << "WARN: The libinput gesture helper is unavailable." << std::endl;
+            return;
+        }
+        int outputPipe[2]{-1, -1};
+        if (pipe(outputPipe) != 0) {
             std::cerr << "WARN: Failed to start libinput gesture monitor." << std::endl;
+            return;
+        }
+        const pid_t child = fork();
+        if (child < 0) {
+            close(outputPipe[0]);
+            close(outputPipe[1]);
+            std::cerr << "WARN: Failed to start libinput gesture monitor." << std::endl;
+            return;
+        }
+        if (child == 0) {
+            close(outputPipe[0]);
+            dup2(outputPipe[1], STDOUT_FILENO);
+            if (outputPipe[1] > STDERR_FILENO) {
+                close(outputPipe[1]);
+            }
+            const int devNull = open("/dev/null", O_WRONLY);
+            if (devNull >= 0) {
+                dup2(devNull, STDERR_FILENO);
+                if (devNull > STDERR_FILENO) {
+                    close(devNull);
+                }
+            }
+            const long reportedOpenMax = sysconf(_SC_OPEN_MAX);
+            const int openMax = reportedOpenMax > 3
+                ? static_cast<int>(std::min<long>(reportedOpenMax, 4096))
+                : 1024;
+            for (int fd = 3; fd < openMax; ++fd) {
+                close(fd);
+            }
+            execl(
+                timeoutPath,
+                timeoutPath,
+                "1s",
+                libinputPath,
+                "debug-events",
+                "--device",
+                device->c_str(),
+                static_cast<char*>(nullptr));
+            _exit(127);
+        }
+        close(outputPipe[1]);
+        FILE* output = fdopen(outputPipe[0], "r");
+        if (output == nullptr) {
+            close(outputPipe[0]);
+            int status = 0;
+            (void)waitpid(child, &status, 0);
+            std::cerr << "WARN: Failed to read libinput gesture monitor." << std::endl;
             return;
         }
 
@@ -1242,7 +1317,7 @@ void LibeiInputCaptureBridge::RunLibinputGestureMonitor() {
         double swipeDy = 0.0;
         double pinchScale = 1.0;
 
-        while (m_running && fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        while (m_running && fgets(buffer, sizeof(buffer), output) != nullptr) {
             const std::string line(buffer);
             std::istringstream in(line);
             std::string deviceToken;
@@ -1292,7 +1367,10 @@ void LibeiInputCaptureBridge::RunLibinputGestureMonitor() {
             }
         }
 
-        pclose(pipe);
+        fclose(output);
+        int status = 0;
+        while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
+        }
     }
 }
 

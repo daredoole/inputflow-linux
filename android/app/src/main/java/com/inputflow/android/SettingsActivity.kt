@@ -4,9 +4,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
 import android.widget.RadioGroup
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
@@ -29,6 +31,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var injectBackendGroup: RadioGroup
     private lateinit var injectStatusText: TextView
     private lateinit var injectConsentSwitch: MaterialSwitch
+    private lateinit var notificationSyncSwitch: MaterialSwitch
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,6 +71,18 @@ class SettingsActivity : AppCompatActivity() {
         sensitivitySlider.value = prefs.getFloat(KEY_SENSITIVITY, 1.0f).coerceIn(0.5f, 3.0f)
 
         laptopTypingSwitch.isChecked = prefs.getBoolean(RelayForegroundService.KEY_LAPTOP_TYPING_ENABLED, false)
+        notificationSyncSwitch = findViewById(R.id.notificationSyncSwitch)
+        notificationSyncSwitch.isChecked =
+            prefs.getBoolean(RelayForegroundService.KEY_NOTIFICATION_SYNC_ENABLED, false)
+        notificationSyncSwitch.setOnCheckedChangeListener { _, checked ->
+            saveSettings()
+            if (checked) {
+                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            }
+        }
+        findViewById<MaterialButton>(R.id.btnSendTestNotification).setOnClickListener {
+            sendTestNotification()
+        }
 
         // Restore keyboard mode
         when (prefs.getString(KEY_KEYBOARD_MODE, "accessibility")) {
@@ -146,25 +161,25 @@ class SettingsActivity : AppCompatActivity() {
     private fun requestShizuku() {
         try {
             if (!Shizuku.pingBinder()) {
-                injectStatusText.text = "Shizuku not running — install and start the Shizuku app first."
+                injectStatusText.setText(R.string.shizuku_not_running)
                 return
             }
             if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
                 updateInjectStatus()
             } else {
                 Shizuku.requestPermission(SHIZUKU_REQ)
-                injectStatusText.text = "Shizuku permission requested — approve, then reopen Settings."
+                injectStatusText.setText(R.string.shizuku_permission_requested)
             }
-        } catch (t: Throwable) {
-            injectStatusText.text = "Shizuku error: ${t.message}"
+        } catch (_: Throwable) {
+            injectStatusText.setText(R.string.shizuku_error)
         }
     }
 
     private fun requestRoot() {
-        injectStatusText.text = "Requesting root…"
+        injectStatusText.setText(R.string.root_requesting)
         Shell.getShell { shell ->
             runOnUiThread {
-                injectStatusText.text = if (shell.isRoot) "Root granted." else "Root denied."
+                injectStatusText.setText(if (shell.isRoot) R.string.root_granted else R.string.root_denied)
             }
         }
     }
@@ -175,8 +190,39 @@ class SettingsActivity : AppCompatActivity() {
                 Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
         } catch (_: Throwable) { false }
         val root = try { Shell.isAppGrantedRoot() == true } catch (_: Throwable) { false }
-        injectStatusText.text =
-            "Shizuku: ${if (shizuku) "ready" else "unavailable"}    Root: ${if (root) "ready" else "unavailable"}"
+        injectStatusText.text = getString(
+            R.string.injection_status,
+            getString(if (shizuku) R.string.injection_ready else R.string.injection_unavailable),
+            getString(if (root) R.string.injection_ready else R.string.injection_unavailable),
+        )
+    }
+
+    private fun sendTestNotification() {
+        saveSettings()
+        if (!notificationSyncSwitch.isChecked) {
+            Toast.makeText(this, R.string.test_notification_enable_sync, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (!RelayForegroundService.isConnectedForWrites()) {
+            Toast.makeText(this, R.string.test_notification_not_connected, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        val sent = RelayForegroundService.sendNotificationUpsert(
+            stableId = "inputflow-test:$now",
+            app = getString(R.string.app_name),
+            packageName = packageName,
+            title = getString(R.string.test_notification_title),
+            body = getString(R.string.test_notification_body),
+            postedAtMs = now
+        )
+        Toast.makeText(
+            this,
+            if (sent) R.string.test_notification_sent else R.string.test_notification_failed,
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun saveSettings() {
@@ -207,6 +253,7 @@ class SettingsActivity : AppCompatActivity() {
             .putString(KEY_CURSOR_COLOR, cursorColor)
             .putFloat(KEY_SENSITIVITY, sensitivitySlider.value)
             .putBoolean(RelayForegroundService.KEY_LAPTOP_TYPING_ENABLED, laptopTypingSwitch.isChecked)
+            .putBoolean(RelayForegroundService.KEY_NOTIFICATION_SYNC_ENABLED, notificationSyncSwitch.isChecked)
             .putString(KEY_KEYBOARD_MODE, keyboardMode)
             .putString(KEY_CONNECTION_MODE, connectionMode)
             .putString(InjectorManager.KEY_INJECT_BACKEND, injectBackend)

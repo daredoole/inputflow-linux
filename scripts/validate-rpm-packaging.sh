@@ -83,7 +83,7 @@ grep -Eq '^Terminal=false$' packaging/usr/share/applications/inputflow.desktop |
 grep -Eq '^DIAGNOSTICS_BUNDLE_SCRIPT="\$SCRIPT_DIR/scripts/inputflow-diagnostics-bundle\.sh"$' mwb-desktop-ui.sh || fail "desktop UI must resolve diagnostics bundle next to the packaged controller"
 bash -n scripts/inputflow-diagnostics-bundle.sh || fail "diagnostics bundle script must pass bash syntax checks"
 grep -Eq 'doctor --config' scripts/inputflow-diagnostics-bundle.sh || fail "diagnostics bundle must collect client doctor output"
-grep -Eq 'systemctl --user --no-pager status mwb-client\.service' scripts/inputflow-diagnostics-bundle.sh || fail "diagnostics bundle must collect user service status"
+grep -Eq 'systemctl --user --no-pager( --[^ ]+)* status mwb-client\.service' scripts/inputflow-diagnostics-bundle.sh || fail "diagnostics bundle must collect user service status"
 grep -Eq 'redacted' scripts/inputflow-diagnostics-bundle.sh || fail "diagnostics bundle must redact config/state content"
 grep -Eq '%\{_bindir\}/mwb_client' "$spec_file" || fail "spec must package mwb_client"
 grep -Eq '%\{_bindir\}/mwb_tray' "$spec_file" || fail "spec must package mwb_tray"
