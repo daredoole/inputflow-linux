@@ -6,7 +6,7 @@
     </linearGradient>
   </defs>
   <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#bg)"/>
-  
+
   <!-- ears -->
   <g transform="translate(450,432) rotate(-20)">
     <rect x="-42" y="-232" width="84" height="252" rx="42" fill="#C7D0E4"/>
