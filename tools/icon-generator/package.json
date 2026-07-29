@@ -2,7 +2,7 @@
   "name": "inputflow-icons",
   "version": "1.0.0",
   "private": true,
-  "description": "InputFlow donkey icon set — Linux hicolor + Android adaptive/notification + Play Store",
+  "description": "InputFlow device-flow icon set — Linux hicolor + Android adaptive/notification + Play Store",
   "scripts": {
     "masters": "node build-masters.js",
     "build": "node build.js"
