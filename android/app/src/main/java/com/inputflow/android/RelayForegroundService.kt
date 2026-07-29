@@ -11,7 +11,6 @@ import android.os.IBinder
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.DataOutputStream
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -19,9 +18,6 @@ class RelayForegroundService : Service() {
     private val running = AtomicBoolean(false)
     private var worker: Thread? = null
 
-    @Volatile
-    private var output: DataOutputStream? = null
-    private val outputLock = Any()
     @Volatile
     private var remoteControlActive = false
     private var deliveredMouseFrames = 0
@@ -38,7 +34,9 @@ class RelayForegroundService : Service() {
         if (instance === this) instance = null
         running.set(false)
         worker?.interrupt()
-        output = null
+        // Do NOT null activeSession here: under START_STICKY a stale instance can be
+        // destroyed while a newer instance owns the live stream. The owning
+        // relayLoop clears it on its own disconnect.
         deactivateRemoteControl()
         broadcastStatus(STATE_DISCONNECTED, "Stopped")
         super.onDestroy()
@@ -88,38 +86,6 @@ class RelayForegroundService : Service() {
         writeFrame(JSONObject().put("type", "topology_update").put("layout", layout))
     }
 
-    fun isConnectedForWrites(): Boolean =
-        currentState == STATE_CONNECTED && output != null
-
-    fun sendNotificationUpsert(
-        stableId: String,
-        app: String,
-        packageName: String,
-        title: String,
-        body: String,
-        postedAtMs: Long
-    ): Boolean =
-        writeFrame(
-            JSONObject()
-                .put("type", "notification_upsert")
-                .put("stable_id", stableId)
-                .put("origin", "android")
-                .put("app", app)
-                .put("package", packageName)
-                .put("title", title)
-                .put("body", body)
-                .put("posted_at_ms", postedAtMs)
-        )
-
-    fun sendNotificationDismiss(stableId: String, packageName: String): Boolean =
-        writeFrame(
-            JSONObject()
-                .put("type", "notification_dismiss")
-                .put("stable_id", stableId)
-                .put("origin", "android")
-                .put("package", packageName)
-        )
-
     private fun startRelay() {
         if (!running.compareAndSet(false, true)) return
         InjectorManager.start(this)
@@ -132,19 +98,25 @@ class RelayForegroundService : Service() {
         when (frame.optString("type")) {
             "control" -> setRemoteControlActive(frame.optBoolean("active", false))
             "mouse" -> if (remoteControlActive) {
-                // Prefer native injection (Shizuku/root); fall back to accessibility.
+                // Native (Shizuku/root) injects ALL mouse input — moves, clicks, wheel —
+                // as real events. The accessibility overlay still draws the visible
+                // cursor on moves (native pointer injection isn't rendered by Android).
+                val handledNative = InjectorManager.handleMouse(frame)
                 val accessibility = InputFlowAccessibilityService.instance
                 val isMove = frame.optInt("wParam") == WM_MOUSEMOVE
-                if (isMove && InjectorManager.handleMouse(frame)) {
-                    // Native pointer motion succeeded.
-                } else if (accessibility != null) {
-                    deliveredMouseFrames += 1
-                    accessibility.handleMouse(frame)
-                } else if (!InjectorManager.handleMouse(frame)) {
-                    if (droppedMouseFrames < 5) {
-                        Log.w(TAG, "mouse frame dropped: no injector active")
+                if (isMove) {
+                    accessibility?.handleMouse(frame)
+                    if (!handledNative && accessibility == null) {
+                        if (droppedMouseFrames < 5) {
+                            Log.w(TAG, "mouse frame dropped: no injector active")
+                        }
+                        droppedMouseFrames += 1
+                    } else {
+                        deliveredMouseFrames += 1
                     }
-                    droppedMouseFrames += 1
+                } else if (!handledNative) {
+                    // No native injector → accessibility handles the click.
+                    accessibility?.handleMouse(frame)
                 }
             }
             "keyboard" -> {
@@ -166,16 +138,23 @@ class RelayForegroundService : Service() {
                 }
             }
             "gesture" -> if (remoteControlActive) {
-                val accessibility = InputFlowAccessibilityService.instance
-                if (accessibility != null) {
-                    accessibility.handleGesture(frame)
-                } else if (frame.optString("kind") == "scroll") {
-                    InjectorManager.handleScroll(frame)
+                // Native continuous scroll first (smooth, no gesture cancellation);
+                // multi-finger swipes/pinch still go through accessibility.
+                val kind = frame.optString("kind")
+                if (kind == "scroll" && InjectorManager.handleScroll(frame)) {
+                    // native scroll
+                } else {
+                    InputFlowAccessibilityService.instance?.handleGesture(frame)
                 }
             }
             "devices_info" -> handleDevicesInfo(frame)
             "notification_upsert" -> NotificationSyncBridge.showMirroredNotification(this, frame)
             "notification_dismiss" -> NotificationSyncBridge.cancelMirroredNotification(this, frame)
+            "notification_reply" -> NotificationSyncBridge.replyToNotification(
+                this,
+                frame.optString("stable_id"),
+                frame.optString("text")
+            )
         }
     }
 
@@ -183,7 +162,7 @@ class RelayForegroundService : Service() {
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         while (running.get()) {
             val host = prefs.getString(KEY_HOST, "").orEmpty()
-            val secret = prefs.getString(KEY_SECRET, "").orEmpty()
+            val secret = PairingSecretStore.read(this)
             val port = prefs.getInt(KEY_PORT, 15102)
             if (host.isBlank() || secret.isBlank()) {
                 startRelayForeground("Missing pairing settings")
@@ -197,46 +176,52 @@ class RelayForegroundService : Service() {
                 // the Linux box across IP changes (DHCP/VPN), same self-healing
                 // model as the desktop client. An IP literal resolves to itself.
                 val address = java.net.InetAddress.getByName(host)
-                Log.i(TAG, "relay connecting: $host -> ${address.hostAddress}:$port")
+                Log.i(TAG, "relay connection attempt started")
                 java.net.Socket().use { socket ->
                     socket.tcpNoDelay = true
                     socket.connect(java.net.InetSocketAddress(address, port), 8000)
-                    val device = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
-                    val streams = RelayProtocol.authenticate(socket, secret, device)
-                    output = streams.second
-                    deliveredMouseFrames = 0
-                    droppedMouseFrames = 0
-                    Log.i(TAG, "relay connected to $host:$port as $device")
-                    deactivateRemoteControl()
-                    startRelayForeground("Connected to $host:$port")
-                    broadcastStatus(STATE_CONNECTED, "$host:$port")
-                    while (running.get()) {
-                        var frame = RelayProtocol.readFrame(streams.first)
-                        // Collapse a backlog of mouse-move frames to the newest so the
-                        // cursor tracks live with no lag under load. Non-move frames are
-                        // dispatched in order; only intermediate moves are dropped.
-                        while (frame.optString("type") == "mouse" &&
-                            frame.optInt("wParam") == WM_MOUSEMOVE &&
-                            streams.first.available() > 4
-                        ) {
-                            val next = RelayProtocol.readFrame(streams.first)
-                            if (next.optString("type") == "mouse" &&
-                                next.optInt("wParam") == WM_MOUSEMOVE
+                    val device = getString(R.string.default_device_name)
+                    val session = RelayProtocol.authenticate(socket, secret, device)
+                    synchronized(activeSessionLock) { activeSession = session }
+                    try {
+                        deliveredMouseFrames = 0
+                        droppedMouseFrames = 0
+                        Log.i(TAG, "encrypted relay connection authenticated")
+                        deactivateRemoteControl()
+                        startRelayForeground("Connected securely")
+                        broadcastStatus(STATE_CONNECTED, "Connected securely")
+                        while (running.get()) {
+                            var frame = session.readFrame()
+                            // Collapse a backlog of mouse-move frames to the newest so the
+                            // cursor tracks live with no lag under load. Non-move frames are
+                            // dispatched in order; only intermediate moves are dropped.
+                            while (frame.optString("type") == "mouse" &&
+                                frame.optInt("wParam") == WM_MOUSEMOVE &&
+                                session.hasBufferedFrame()
                             ) {
-                                frame = next
-                            } else {
-                                dispatchFrame(frame, prefs)
-                                frame = next
-                                break
+                                val next = session.readFrame()
+                                if (next.optString("type") == "mouse" &&
+                                    next.optInt("wParam") == WM_MOUSEMOVE
+                                ) {
+                                    frame = next
+                                } else {
+                                    dispatchFrame(frame, prefs)
+                                    frame = next
+                                    break
+                                }
                             }
+                            dispatchFrame(frame, prefs)
                         }
-                        dispatchFrame(frame, prefs)
+                    } finally {
+                        deactivateRemoteControl()
+                        synchronized(activeSessionLock) {
+                            if (activeSession === session) activeSession = null
+                        }
+                        session.destroy()
                     }
-                    deactivateRemoteControl()
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "relay disconnected; retrying", e)
-                output = null
+            } catch (_: Exception) {
+                Log.w(TAG, "relay disconnected; retrying")
                 deactivateRemoteControl()
                 startRelayForeground("Disconnected; retrying")
                 broadcastStatus(STATE_DISCONNECTED, "Retrying…")
@@ -248,31 +233,17 @@ class RelayForegroundService : Service() {
     private fun handleDevicesInfo(frame: JSONObject) {
         val json = frame.toString()
         cachedDevicesJson = json
-        sendBroadcast(Intent(ACTION_DEVICES_BROADCAST).putExtra(EXTRA_DEVICES_JSON, json))
+        sendBroadcast(
+            Intent(ACTION_DEVICES_BROADCAST)
+                .setPackage(packageName)
+                .putExtra(EXTRA_DEVICES_JSON, json),
+        )
     }
 
     private fun sendRelease() {
         writeFrame(JSONObject().put("type", "release"))
     }
 
-    private fun writeFrame(frame: JSONObject): Boolean {
-        return try {
-            synchronized(outputLock) {
-                output?.let {
-                    RelayProtocol.writeFrame(it, frame)
-                    true
-                } ?: run {
-                    Log.w(TAG, "failed to write relay frame type=${frame.optString("type")}: no relay output stream")
-                    false
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "failed to write relay frame type=${frame.optString("type")}", e)
-            output = null
-            broadcastStatus(STATE_DISCONNECTED, "Retrying…")
-            false
-        }
-    }
 
     private fun setRemoteControlActive(active: Boolean) {
         val changed = remoteControlActive != active
@@ -284,7 +255,10 @@ class RelayForegroundService : Service() {
         if (active && accessibility == null) {
             Log.w(TAG, "remote control requested but accessibility service is not active")
         }
-        accessibility?.setRemoteControlActive(active && !InjectorManager.hasNativeInjector())
+        // Always show the accessibility overlay cursor while controlled — native
+        // pointer injection moves the logical pointer but Android doesn't render it,
+        // so the overlay is what the user actually sees.
+        accessibility?.setRemoteControlActive(active)
         if (!active) {
             InputFlowImeService.restorePreviousKeyboard()
         }
@@ -335,7 +309,6 @@ class RelayForegroundService : Service() {
         const val PREFS = "inputflow"
         const val KEY_HOST = "host"
         const val KEY_PORT = "port"
-        const val KEY_SECRET = "secret"
         const val KEY_LAPTOP_TYPING_ENABLED = "laptop_typing_enabled"
         const val KEY_NOTIFICATION_SYNC_ENABLED = "notification_sync_enabled"
         const val KEY_STATUS_STATE = "status_state"
@@ -357,6 +330,83 @@ class RelayForegroundService : Service() {
         private const val TAG = "InputFlowRelay"
 
         @Volatile var instance: RelayForegroundService? = null
+        // The live encrypted relay session, shared statically so the notification
+        // listener (a separate service) can always reach the connected socket
+        // regardless of which RelayForegroundService instance it resolves via
+        // [instance] — START_STICKY can leave more than one instance around.
+        @Volatile var activeSession: RelayProtocol.Session? = null
+        val activeSessionLock = Any()
+
+        /** True when the live relay stream is available for outbound writes. */
+        fun isConnectedForWrites(): Boolean =
+            currentState == STATE_CONNECTED && activeSession != null
+
+        // Serializes all outbound relay writes onto a single background thread.
+        // Notification-listener callbacks fire on the MAIN thread, where a socket
+        // write throws NetworkOnMainThreadException; the read loop runs on its own
+        // worker. A single-thread executor both moves writes off the main thread and
+        // guarantees frames never interleave on the socket.
+        private val relayWriteExecutor: java.util.concurrent.ExecutorService =
+            java.util.concurrent.Executors.newSingleThreadExecutor()
+
+        /**
+         * Queues a frame for the live relay stream. Static so callers (the separate
+         * notification-listener service, the settings test button) never depend on a
+         * resolvable RelayForegroundService [instance] — under START_STICKY that can
+         * be null even while the connection is up. Returns true if a connection was
+         * available to enqueue onto; the write itself happens asynchronously.
+         */
+        fun writeFrame(frame: JSONObject): Boolean {
+            val haveStream = synchronized(activeSessionLock) { activeSession != null }
+            if (!haveStream) {
+                Log.w(TAG, "no relay output stream for ${frame.optString("type")}")
+                return false
+            }
+            relayWriteExecutor.execute {
+                try {
+                    synchronized(activeSessionLock) {
+                        val session = activeSession ?: return@execute
+                        session.writeFrame(frame)
+                    }
+                } catch (e: Exception) {
+                    // Don't tear down activeSession: the owning relayLoop detects a dead
+                    // socket via readFrame and reconnects, re-seating the stream.
+                    Log.w(TAG, "failed to write relay frame ${frame.optString("type")}", e)
+                }
+            }
+            return true
+        }
+
+        fun sendNotificationUpsert(
+            stableId: String,
+            app: String,
+            packageName: String,
+            title: String,
+            body: String,
+            postedAtMs: Long,
+            iconPng: String? = null,
+            canReply: Boolean = false,
+        ): Boolean = writeFrame(
+            JSONObject()
+                .put("type", "notification_upsert")
+                .put("stable_id", stableId)
+                .put("origin", "android")
+                .put("app", app)
+                .put("package", packageName)
+                .put("title", title)
+                .put("body", body)
+                .put("posted_at_ms", postedAtMs)
+                .put("can_reply", canReply)
+                .apply { if (!iconPng.isNullOrEmpty()) put("icon_png", iconPng) }
+        )
+
+        fun sendNotificationDismiss(stableId: String, packageName: String): Boolean = writeFrame(
+            JSONObject()
+                .put("type", "notification_dismiss")
+                .put("stable_id", stableId)
+                .put("origin", "android")
+                .put("package", packageName)
+        )
         @Volatile var currentState: String = STATE_DISCONNECTED
         @Volatile var currentDetail: String? = null
         @Volatile var cachedDevicesJson: String? = null

@@ -3,8 +3,7 @@
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="@color/colorSurface">
+    android:layout_height="match_parent">
 
     <com.google.android.material.appbar.AppBarLayout
         android:layout_width="match_parent"
@@ -167,7 +166,7 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="0.5×"
+                            android:text="@string/sensitivity_minimum"
                             android:textAppearance="@style/TextAppearance.Material3.BodySmall"
                             android:textColor="?android:attr/textColorSecondary"
                             android:layout_marginEnd="8dp" />
@@ -186,7 +185,7 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="3×"
+                            android:text="@string/sensitivity_maximum"
                             android:textAppearance="@style/TextAppearance.Material3.BodySmall"
                             android:textColor="?android:attr/textColorSecondary"
                             android:layout_marginStart="8dp" />
@@ -435,7 +434,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
                 android:layout_marginStart="4dp"
-                android:text="Input method"
+                android:text="@string/section_input_method"
                 style="@style/SectionHeader" />
 
             <com.google.android.material.card.MaterialCardView
@@ -464,28 +463,28 @@
                             android:id="@+id/injectAuto"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="Auto (best available)"
+                            android:text="@string/input_method_auto"
                             android:textAppearance="@style/TextAppearance.Material3.BodyMedium" />
 
                         <RadioButton
                             android:id="@+id/injectAccessibility"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="Accessibility (no root, basic)"
+                            android:text="@string/input_method_accessibility"
                             android:textAppearance="@style/TextAppearance.Material3.BodyMedium" />
 
                         <RadioButton
                             android:id="@+id/injectShizuku"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="Shizuku (no root, native)"
+                            android:text="@string/input_method_shizuku"
                             android:textAppearance="@style/TextAppearance.Material3.BodyMedium" />
 
                         <RadioButton
                             android:id="@+id/injectRoot"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="Root (native)"
+                            android:text="@string/input_method_root"
                             android:textAppearance="@style/TextAppearance.Material3.BodyMedium" />
 
                     </RadioGroup>
@@ -501,14 +500,14 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginEnd="8dp"
-                            android:text="Grant Shizuku" />
+                            android:text="@string/grant_shizuku" />
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/grantRootButton"
                             style="@style/Widget.Material3.Button.OutlinedButton"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="Grant Root" />
+                            android:text="@string/grant_root" />
 
                     </LinearLayout>
 
@@ -523,7 +522,7 @@
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
-                            android:text="Allow native input injection (system-level control)"
+                            android:text="@string/native_input_consent"
                             android:textAppearance="@style/TextAppearance.Material3.BodyMedium" />
 
                         <com.google.android.material.materialswitch.MaterialSwitch
@@ -538,7 +537,6 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
-                        android:text=""
                         android:textAppearance="@style/TextAppearance.Material3.BodySmall"
                         android:textColor="?android:attr/textColorSecondary" />
 

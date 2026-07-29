@@ -4,11 +4,21 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.RemoteInput
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.Drawable
 import android.os.Build
+import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import android.util.Base64
+import android.util.Log
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONObject
 import kotlin.math.absoluteValue
 
@@ -29,6 +39,13 @@ object NotificationSyncBridge {
         "\\b(otp|one[- ]?time|verification|2fa|two[- ]?factor|password|passcode|bank|credit|debit)\\b",
         RegexOption.IGNORE_CASE
     )
+
+    // Live reply actions keyed by the synced notification's stable_id, so a reply
+    // typed on the desktop can be fired back into the originating app. Bounded so a
+    // long-running listener can't grow unbounded; oldest entries are evicted.
+    private const val MAX_REPLY_ENTRIES = 200
+    private val replyActions = ConcurrentHashMap<String, Notification.Action>()
+    private val replyOrder = ArrayDeque<String>()
 
     fun sendAndroidNotification(context: Context, sbn: StatusBarNotification) {
         if (!isEnabled(context) || sbn.packageName == context.packageName) return
@@ -53,19 +70,97 @@ object NotificationSyncBridge {
         if (title.isBlank() && body.isBlank()) return
         if (isSensitive(title, body)) return
 
-        RelayForegroundService.instance?.sendNotificationUpsert(
-            stableId = stableId(sbn),
+        val sid = stableId(sbn)
+        val replyAction = findReplyAction(notification)
+        if (replyAction != null) {
+            rememberReplyAction(sid, replyAction)
+        }
+
+        RelayForegroundService.sendNotificationUpsert(
+            stableId = sid,
             app = appLabel(context, sbn.packageName),
             packageName = sbn.packageName,
             title = title,
             body = body,
-            postedAtMs = sbn.postTime
+            postedAtMs = sbn.postTime,
+            iconPng = appIconBase64(context, sbn.packageName),
+            canReply = replyAction != null
         )
+    }
+
+    /** First notification action carrying a free-text RemoteInput (quick reply). */
+    private fun findReplyAction(notification: Notification): Notification.Action? {
+        val actions = notification.actions ?: return null
+        return actions.firstOrNull { action ->
+            action.remoteInputs?.any { it.allowFreeFormInput } == true
+        }
+    }
+
+    private fun rememberReplyAction(stableId: String, action: Notification.Action) {
+        synchronized(replyOrder) {
+            if (replyActions.put(stableId, action) == null) {
+                replyOrder.addLast(stableId)
+                while (replyOrder.size > MAX_REPLY_ENTRIES) {
+                    replyActions.remove(replyOrder.removeFirst())
+                }
+            }
+        }
+    }
+
+    /**
+     * Fires a desktop-typed reply back into the originating app via its
+     * RemoteInput. Returns true if the reply was dispatched.
+     */
+    fun replyToNotification(context: Context, stableId: String, text: String): Boolean {
+        val action = replyActions[stableId] ?: run {
+            Log.w("NotificationSync", "No live reply action is available")
+            return false
+        }
+        val remoteInputs = action.remoteInputs?.takeIf { it.isNotEmpty() } ?: return false
+        return try {
+            val intent = Intent()
+            val results = Bundle()
+            for (ri in remoteInputs) {
+                results.putCharSequence(ri.resultKey, text)
+            }
+            RemoteInput.addResultsToIntent(remoteInputs, intent, results)
+            action.actionIntent.send(context, 0, intent)
+            // A reply consumes the action; drop it so a stale id can't re-fire.
+            synchronized(replyOrder) {
+                if (replyActions.remove(stableId) != null) replyOrder.remove(stableId)
+            }
+            true
+        } catch (_: Exception) {
+            Log.w("NotificationSync", "Failed to send notification reply")
+            false
+        }
+    }
+
+    /** App launcher icon as a base64 PNG, so the desktop can show the real icon. */
+    private fun appIconBase64(context: Context, packageName: String): String? {
+        return try {
+            val drawable: Drawable = context.packageManager.getApplicationIcon(packageName)
+            val size = 96
+            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            drawable.setBounds(0, 0, size, size)
+            drawable.draw(canvas)
+            val out = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            bitmap.recycle()
+            Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        } catch (_: Exception) {
+            null
+        }
     }
 
     fun sendAndroidNotificationDismiss(context: Context, sbn: StatusBarNotification) {
         if (!isEnabled(context) || sbn.packageName == context.packageName) return
-        RelayForegroundService.instance?.sendNotificationDismiss(stableId(sbn), sbn.packageName)
+        val sid = stableId(sbn)
+        synchronized(replyOrder) {
+            if (replyActions.remove(sid) != null) replyOrder.remove(sid)
+        }
+        RelayForegroundService.sendNotificationDismiss(sid, sbn.packageName)
     }
 
     fun showMirroredNotification(context: Context, frame: JSONObject) {

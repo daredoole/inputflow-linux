@@ -69,21 +69,47 @@ struct TrayContext {
 #endif
 };
 
-std::optional<std::string> RunCommandCapture(const std::string& command) {
-    std::array<char, 512> buffer{};
-    std::string output;
-
-    FILE* pipe = popen(command.c_str(), "r");
-    if (pipe == nullptr) {
+std::optional<std::string> RunCommandCapture(const std::vector<std::string>& argv) {
+    if (argv.empty()) {
         return std::nullopt;
     }
-
-    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
-        output.append(buffer.data());
+    std::vector<char*> args;
+    args.reserve(argv.size() + 1);
+    for (const auto& arg : argv) {
+        args.push_back(const_cast<char*>(arg.c_str()));
     }
+    args.push_back(nullptr);
 
-    const int rc = pclose(pipe);
-    if (rc != 0 && output.empty()) {
+    gchar* stdoutData = nullptr;
+    gchar* stderrData = nullptr;
+    gint waitStatus = 0;
+    GError* error = nullptr;
+    const gboolean spawned = g_spawn_sync(
+        nullptr,
+        args.data(),
+        nullptr,
+        G_SPAWN_SEARCH_PATH,
+        nullptr,
+        nullptr,
+        &stdoutData,
+        &stderrData,
+        &waitStatus,
+        &error);
+    std::string output = stdoutData == nullptr ? "" : stdoutData;
+    g_free(stdoutData);
+    g_free(stderrData);
+    if (!spawned) {
+        if (error != nullptr) {
+            g_error_free(error);
+        }
+        return std::nullopt;
+    }
+    GError* waitError = nullptr;
+    const bool succeeded = g_spawn_check_wait_status(waitStatus, &waitError);
+    if (waitError != nullptr) {
+        g_error_free(waitError);
+    }
+    if (!succeeded && output.empty()) {
         return std::nullopt;
     }
 
@@ -91,6 +117,11 @@ std::optional<std::string> RunCommandCapture(const std::string& command) {
         output.pop_back();
     }
     return output;
+}
+
+bool ServiceProcessAppearsRunning() {
+    const auto result = RunCommandCapture({"pgrep", "-f", "[/]mwb_client run --config"});
+    return result.has_value() && !result->empty();
 }
 
 std::int64_t CurrentEpochSeconds() {
@@ -109,11 +140,48 @@ void SaveStateOrLog(const std::string& statePath, const mwb::AppState& state) {
 // Lock the local desktop session. Tries logind first (works headless and on
 // most modern desktops), then falls back to common screen lockers.
 void LockLocalSession() {
-    if (std::system("loginctl lock-session >/dev/null 2>&1") == 0) {
-        return;
+    const std::vector<std::vector<std::string>> commands{
+        {"loginctl", "lock-session"},
+        {"loginctl", "lock-sessions"},
+        {"xdg-screensaver", "lock"},
+        {"qdbus", "org.freedesktop.ScreenSaver", "/ScreenSaver", "Lock"},
+    };
+    for (const auto& command : commands) {
+        std::vector<char*> args;
+        args.reserve(command.size() + 1);
+        for (const auto& arg : command) {
+            args.push_back(const_cast<char*>(arg.c_str()));
+        }
+        args.push_back(nullptr);
+        gint waitStatus = 0;
+        GError* error = nullptr;
+        const gboolean spawned = g_spawn_sync(
+            nullptr,
+            args.data(),
+            nullptr,
+            static_cast<GSpawnFlags>(
+                G_SPAWN_SEARCH_PATH |
+                G_SPAWN_STDOUT_TO_DEV_NULL |
+                G_SPAWN_STDERR_TO_DEV_NULL),
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            &waitStatus,
+            &error);
+        if (error != nullptr) {
+            g_error_free(error);
+        }
+        GError* waitError = nullptr;
+        const bool succeeded =
+            spawned && g_spawn_check_wait_status(waitStatus, &waitError);
+        if (waitError != nullptr) {
+            g_error_free(waitError);
+        }
+        if (succeeded) {
+            return;
+        }
     }
-    (void)std::system("(loginctl lock-sessions || xdg-screensaver lock || "
-                      "qdbus org.freedesktop.ScreenSaver /ScreenSaver Lock) >/dev/null 2>&1");
 }
 
 bool SpawnAsync(const std::vector<std::string>& argv) {
@@ -218,7 +286,7 @@ int AcquireSingleInstanceLock() {
     return -1;
 }
 
-std::string ResolveControllerPath() {
+[[maybe_unused]] std::string ResolveControllerPath() {
     std::vector<std::filesystem::path> candidates;
     if (const auto exePath = ResolveExecutablePath()) {
         const auto exeDir = exePath->parent_path();
@@ -281,11 +349,22 @@ std::string ResolveIconThemePath() {
 }
 
 std::string QueryServiceState() {
+    const bool daemonRunning = ServiceProcessAppearsRunning();
     if (access(kSystemctlPath, X_OK) != 0) {
-        return "unknown";
+        return daemonRunning ? "active" : "inactive";
     }
-    const auto result = RunCommandCapture(std::string(kSystemctlPath) + " --user is-active " + std::string(kServiceName) + " 2>/dev/null");
-    return result.value_or("unknown");
+    const auto result = RunCommandCapture(
+        {kSystemctlPath, "--user", "is-active", kServiceName});
+    if (!result.has_value() || result->empty() || *result == "unknown") {
+        return daemonRunning ? "active" : "inactive";
+    }
+    if ((*result == "active" || *result == "deactivating") && !daemonRunning) {
+        return "inactive";
+    }
+    if (*result == "inactive" && daemonRunning) {
+        return "active";
+    }
+    return *result;
 }
 
 std::string DescribeState(const std::string& state) {
@@ -357,7 +436,7 @@ bool ShouldShowStartupHint() {
     return isatty(STDIN_FILENO) != 0;
 }
 
-void MaybeShowStartupHint(const TrayContext& context) {
+[[maybe_unused]] void MaybeShowStartupHint(const TrayContext& context) {
     if (!ShouldShowStartupHint()) {
         return;
     }
@@ -498,10 +577,15 @@ bool LaunchController(TrayContext* context, const std::vector<std::string>& cont
     return false;
 }
 
+gboolean RefreshStatusOnce(gpointer userData);
+
 void RunServiceAction(TrayContext* context, const std::string& action, const std::string& optimisticState) {
     if (access(kSystemctlPath, X_OK) == 0 &&
         SpawnAsync({kSystemctlPath, "--user", action, kServiceName})) {
         UpdateIndicatorVisuals(context, optimisticState);
+        g_timeout_add_seconds(1, RefreshStatusOnce, context);
+        g_timeout_add_seconds(3, RefreshStatusOnce, context);
+        g_timeout_add_seconds(8, RefreshStatusOnce, context);
         return;
     }
 
@@ -516,6 +600,12 @@ gboolean RefreshStatus(gpointer userData) {
     auto* context = static_cast<TrayContext*>(userData);
     UpdateIndicatorVisuals(context, QueryServiceState());
     return G_SOURCE_CONTINUE;
+}
+
+gboolean RefreshStatusOnce(gpointer userData) {
+    auto* context = static_cast<TrayContext*>(userData);
+    UpdateIndicatorVisuals(context, QueryServiceState());
+    return G_SOURCE_REMOVE;
 }
 
 void OnOpenController(GtkMenuItem*, gpointer userData) {
@@ -697,10 +787,17 @@ void BuildTrayMenu(TrayContext& context) {
     AddMenuItem(menu, "Quit", G_CALLBACK(OnQuit), &context);
     gtk_widget_show_all(menu);
 
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
     context.indicator = app_indicator_new(
         kIndicatorId,
         context.iconThemePath.empty() ? "network-idle-symbolic" : "inputflow-tray",
         APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
     if (!context.iconThemePath.empty()) {
         app_indicator_set_icon_theme_path(context.indicator, context.iconThemePath.c_str());
         app_indicator_set_attention_icon_full(context.indicator, "inputflow-tray-attention", "InputFlow needs attention");
@@ -714,7 +811,7 @@ void BuildTrayMenu(TrayContext& context) {
 
     UpdateIndicatorVisuals(&context, QueryServiceState());
     app_indicator_set_status(context.indicator, APP_INDICATOR_STATUS_ACTIVE);
-    g_timeout_add_seconds(30, RefreshStatus, &context);
+    g_timeout_add_seconds(5, RefreshStatus, &context);
 }
 
 } // namespace
@@ -783,6 +880,8 @@ int RunTrayAndGui(const std::string& binary,
                   const AppConfig& config,
                   const std::string& configPath,
                   const std::string& statePath) {
+    (void)binary;
+    (void)args;
     const int instanceLockFd = AcquireSingleInstanceLock();
     if (instanceLockFd == -2) {
         std::cerr << "InputFlow GUI is already running." << std::endl;

@@ -26,11 +26,20 @@ class NativeInjector(
     private var primaryDownTime: Long = 0L
     private var secondaryDownTime: Long = 0L
     private var tertiaryDownTime: Long = 0L
+    private var leftDown = false
+    private var touchDownTime: Long = 0L
 
     fun ping(): Boolean = try { service.ping() } catch (_: Throwable) { false }
 
-    private fun inject(event: android.view.InputEvent): Boolean =
-        try { service.inject(event) } catch (_: Throwable) { false }
+    private fun inject(
+        event: android.view.InputEvent,
+        mode: Int = SystemInject.MODE_ASYNC,
+    ): Boolean =
+        try {
+            service.inject(event, mode)
+        } catch (_: Throwable) {
+            false
+        }
 
     fun handleMouse(frame: JSONObject): Boolean {
         val m = metricsProvider()
@@ -48,10 +57,28 @@ class NativeInjector(
                 val cy = m.heightPixels / 2f
                 px = (cx + (baseX - cx) * sens).coerceIn(0f, m.widthPixels - 1f)
                 py = (cy + (baseY - cy) * sens).coerceIn(0f, m.heightPixels - 1f)
-                inject(pointerEvent(MotionEvent.ACTION_HOVER_MOVE, 0))
+                // While the left button is held, a move is a drag (touch move).
+                if (leftDown) inject(touchEvent(MotionEvent.ACTION_MOVE)) else true
             }
-            WM_LBUTTONDOWN -> button(MotionEvent.BUTTON_PRIMARY, down = true)
-            WM_LBUTTONUP -> button(MotionEvent.BUTTON_PRIMARY, down = false)
+            // Left click = a real touchscreen tap (down/up) — the reliable path that
+            // registers in every app, exactly like `input tap`. Down→move→up = drag.
+            // Synchronous injection (WAIT_FOR_FINISH) guarantees the DOWN is fully
+            // dispatched before the UP, and a minimum down→up interval is enforced so
+            // the framework's tap detector never sees a zero-duration (ignored) tap.
+            WM_LBUTTONDOWN -> {
+                leftDown = true
+                touchDownTime = SystemClock.uptimeMillis()
+                inject(touchEvent(MotionEvent.ACTION_DOWN), SystemInject.MODE_WAIT_FOR_FINISH)
+            }
+            WM_LBUTTONUP -> {
+                val held = SystemClock.uptimeMillis() - touchDownTime
+                if (held < MIN_TAP_DURATION_MS) {
+                    try { Thread.sleep(MIN_TAP_DURATION_MS - held) } catch (_: InterruptedException) {}
+                }
+                val ok = inject(touchEvent(MotionEvent.ACTION_UP), SystemInject.MODE_WAIT_FOR_FINISH)
+                leftDown = false
+                ok
+            }
             WM_RBUTTONDOWN -> button(MotionEvent.BUTTON_SECONDARY, down = true)
             WM_RBUTTONUP -> button(MotionEvent.BUTTON_SECONDARY, down = false)
             WM_MBUTTONDOWN -> button(MotionEvent.BUTTON_TERTIARY, down = true)
@@ -59,6 +86,20 @@ class NativeInjector(
             WM_MOUSEWHEEL -> scroll(frame.optInt("mouseData"))
             else -> false
         }
+    }
+
+    private fun touchEvent(action: Int): MotionEvent {
+        val now = SystemClock.uptimeMillis()
+        val props = MotionEvent.PointerProperties().apply {
+            id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER
+        }
+        val coords = MotionEvent.PointerCoords().apply {
+            x = px; y = py; pressure = 1f; size = 1f
+        }
+        return MotionEvent.obtain(
+            touchDownTime, now, action, 1,
+            arrayOf(props), arrayOf(coords), 0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0)
     }
 
     private fun button(button: Int, down: Boolean): Boolean {
@@ -187,5 +228,8 @@ class NativeInjector(
         private const val LLKHF_UP = 0x80
         // Trackpad pixel-delta → scroll-unit scale; smaller = faster scroll.
         private const val SCROLL_DIVISOR = 40f
+        // Minimum DOWN→UP interval (ms) so a tap is never zero-duration. AOSP's
+        // monkey tool uses ~5ms; we use a slightly safer floor.
+        private const val MIN_TAP_DURATION_MS = 12L
     }
 }

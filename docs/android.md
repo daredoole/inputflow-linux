@@ -101,9 +101,14 @@ or root backend is selected — that includes secure fields. The shared
 
 - The relay **refuses to start** and `android-pair` **refuses to emit a URI**
   when the secret is weak (`< 16` characters or too little variety).
+- Relay protocol v2 derives separate send/receive keys from each random
+  challenge and protects every post-authentication frame with AES-256-GCM.
+  Sequence numbers reject replayed, reordered, or tampered input frames.
 - Generate a strong (256-bit) secret with `android-pair --generate`.
 - Keep the relay on a trusted LAN/VPN; never expose its port to the internet.
 - Treat the pairing URI/QR like a password — it contains the secret.
+- Android builds from before protocol v2 cannot connect to this release; update
+  both peers together. Existing strong pairing secrets remain valid.
 
 ## Current limitations
 

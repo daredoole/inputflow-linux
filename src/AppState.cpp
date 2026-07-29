@@ -1,4 +1,5 @@
 #include "AppState.h"
+#include "SecureFile.h"
 
 #include <algorithm>
 #include <cctype>
@@ -195,19 +196,7 @@ bool LoadAppState(const std::filesystem::path& path, AppState& state, std::strin
 }
 
 bool SaveAppState(const std::filesystem::path& path, const AppState& state, std::string& errorMessage) {
-    std::error_code mkdirError;
-    std::filesystem::create_directories(path.parent_path(), mkdirError);
-    if (mkdirError) {
-        errorMessage = "Failed to create state directory: " + mkdirError.message();
-        return false;
-    }
-
-    std::ofstream output(path);
-    if (!output) {
-        errorMessage = "Could not write state file: " + path.string();
-        return false;
-    }
-
+    std::ostringstream output;
     output << "local_machine_id=0x" << std::hex << state.localMachineId << std::dec << "\n";
     for (const auto& peer : state.peers) {
         output << "peer="
@@ -220,12 +209,7 @@ bool SaveAppState(const std::filesystem::path& path, const AppState& state, std:
                << peer.lastConnectedEpochSeconds << "\n";
     }
 
-    if (!output) {
-        errorMessage = "Failed while writing state file: " + path.string();
-        return false;
-    }
-
-    return true;
+    return WritePrivateFileAtomically(path, output.str(), errorMessage);
 }
 
 uint32_t EnsureLocalMachineId(AppState& state) {

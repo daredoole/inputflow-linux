@@ -18,6 +18,20 @@ mwb-socket-trace-*.txt
 inputflow-windows-pair-*.ps1
 AGENTS.md
 artifacts/
+graphify-out/
+inputflow-diagnostics-*.tar.gz
+inputflow-diagnostics-*.zip
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+config.ini
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
 
 # Android build / local SDK + signing material (never commit)
 .gradle/

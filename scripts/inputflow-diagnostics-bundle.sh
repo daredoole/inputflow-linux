@@ -6,7 +6,7 @@ SCRIPT_NAME="$(basename "$0")"
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--config PATH] [--state PATH] [--output DIR]
+Usage: $SCRIPT_NAME [--config PATH] [--state PATH] [--output DIR] [OPTIONS]
 
 Create a redacted InputFlow diagnostics bundle.
 
@@ -14,6 +14,11 @@ Options:
   --config PATH  Config file to summarize (default: XDG config mwb-client/config.ini)
   --state PATH   State file to include if present (default: XDG state mwb-client/state.ini)
   --output DIR   Directory where the bundle archive is created (default: current directory)
+  --preview      Leave an unpacked directory for review instead of creating an archive
+  --include-journal
+                 Include recent InputFlow service logs; logs may contain personal data
+  --include-network
+                 Include redacted host, interface, route, and listening-socket details
   -h, --help     Show this help
 EOF
 }
@@ -54,6 +59,9 @@ default_state_path() {
 CONFIG_PATH="$(default_config_path)"
 STATE_PATH="$(default_state_path)"
 OUTPUT_DIR="."
+PREVIEW=0
+INCLUDE_JOURNAL=0
+INCLUDE_NETWORK=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -71,6 +79,18 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "--output requires a directory"
       OUTPUT_DIR="$2"
       shift 2
+      ;;
+    --preview)
+      PREVIEW=1
+      shift
+      ;;
+    --include-journal)
+      INCLUDE_JOURNAL=1
+      shift
+      ;;
+    --include-network)
+      INCLUDE_NETWORK=1
+      shift
       ;;
     -h|--help)
       usage
@@ -102,6 +122,13 @@ redact_stream() {
     -e 's/([A-Za-z_][A-Za-z0-9_]*(KEY|TOKEN|SECRET|PASSWORD|PASSPHRASE)[A-Za-z0-9_]*=)[^[:space:]]+/\1[REDACTED]/Ig' \
     -e "s/((secret|key|token|password|passphrase)( service)? id[[:space:]]+'?)[^'[:space:]]+('?)/\1[REDACTED]\4/Ig" \
     -e 's/(<SECURITY_KEY>|SECURITY_KEY|security key)[^[:space:]]*/\1[REDACTED]/Ig' \
+    -e 's#/(home|Users)/[^/[:space:]]+#/\1/[REDACTED_USER]#g' \
+    -e 's/^([[:space:]]*[^#;[:space:]]*(host|peer|machine|device|address|username|user_name)[^=]*[[:space:]]*=[[:space:]]*).*/\1[REDACTED]/I' \
+    -e 's/^([[:space:]]*(User|Host|Hostname|Repository|config_path|state_path|Static hostname)[=:][[:space:]]*).*/\1[REDACTED]/I' \
+    -e 's/^((USER|LOGNAME|HOSTNAME)=).*/\1[REDACTED]/' \
+    -e 's/([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}/[REDACTED_MAC]/g' \
+    -e 's/([0-9]{1,3}\.){3}[0-9]{1,3}/[REDACTED_IP]/g' \
+    -e 's/(^|[[:space:]])(vk|key|flags|wParam|mouseData|x|y)=(-?0x[[:xdigit:]]+|-?[0-9]+)/\1\2=[REDACTED_INPUT]/Ig' \
     -e 's/[A-Fa-f0-9]{32,}/[REDACTED_HEX]/g'
 }
 
@@ -116,6 +143,16 @@ safe_run() {
     local status=$?
     printf '\n[exit status: %s]\n' "$status"
   } 2>&1 | redact_stream >"$output_file"
+}
+
+safe_run_bounded() {
+  local output_file="$1"
+  shift
+  if have timeout; then
+    safe_run "$output_file" timeout --signal=TERM --kill-after=2s 10s "$@"
+  else
+    safe_run "$output_file" "$@"
+  fi
 }
 
 safe_shell() {
@@ -143,7 +180,7 @@ redacted_copy_or_note() {
     else
       printf 'present=no\n'
     fi
-  } >"$output_file"
+  } | redact_stream >"$output_file"
 }
 
 json_escape() {
@@ -232,7 +269,7 @@ write_json_summary() {
     printf '  "input": {"uinput_present": '; json_bool "$uinput_present"; printf ', "uinput_writable": '; json_bool "$uinput_writable"; printf ', "uinput_module_loaded": '; json_bool "$uinput_module"; printf '},\n'
     printf '  "tools": {"wl_copy": '; have wl-copy && printf true || printf false; printf ', "wl_paste": '; have wl-paste && printf true || printf false; printf ', "xclip": '; have xclip && printf true || printf false; printf ', "xsel": '; have xsel && printf true || printf false; printf ', "secret_tool": '; have secret-tool && printf true || printf false; printf ', "systemctl": '; have systemctl && printf true || printf false; printf ', "journalctl": '; have journalctl && printf true || printf false; printf ', "ip": '; have ip && printf true || printf false; printf ', "ss": '; have ss && printf true || printf false; printf '}\n'
     printf '}\n'
-  } >"$output_file"
+  } | redact_stream >"$output_file"
 }
 
 write_config_summary() {
@@ -300,24 +337,47 @@ modified=%y' "$STATE_PATH" 2>/dev/null || true
     printf 'peer_lines=%s\n' "${peer_lines:-0}"
     printf '\n[redacted state]\n'
     redact_stream <"$STATE_PATH"
-  } >"$output_file"
+  } | redact_stream >"$output_file"
 }
 
 write_manifest() {
-  cat >"$BUNDLE_DIR/README.txt" <<EOF
+  {
+    cat <<EOF
 InputFlow diagnostics bundle
 Created: $(date -Is 2>/dev/null || date)
-Host: $(hostname 2>/dev/null || printf 'unknown')
-User: $(id -un 2>/dev/null || printf 'unknown')
-Repository: $REPO_ROOT
+Host: [REDACTED]
+User: [REDACTED]
+Repository: [REDACTED]
 
-This bundle is redacted by best effort before files are written. Security keys,
-tokens, passwords, key file values, secret IDs, and long hex strings are replaced.
-Review before sharing outside trusted support channels.
+This bundle remains on this device until you choose to share it. Security keys,
+tokens, passwords, secret IDs, home-directory usernames, network addresses, and
+hardware addresses are redacted by best effort. Review every file before sharing.
+
+Recent service journal included: $INCLUDE_JOURNAL
+Network details included: $INCLUDE_NETWORK
+EOF
+  } | redact_stream >"$BUNDLE_DIR/README.txt"
+}
+
+write_consent_manifest() {
+  cat >"$BUNDLE_DIR/consent.json" <<EOF
+{
+  "schema_version": 1,
+  "automatic_upload": false,
+  "user_review_required": true,
+  "included_categories": {
+    "configuration_summary": true,
+    "application_state_summary": true,
+    "system_and_package_status": true,
+    "service_journal": $([[ "$INCLUDE_JOURNAL" -eq 1 ]] && printf true || printf false),
+    "network_details": $([[ "$INCLUDE_NETWORK" -eq 1 ]] && printf true || printf false)
+  }
+}
 EOF
 }
 
 write_manifest
+write_consent_manifest
 write_json_summary "$BUNDLE_DIR/summary.json"
 write_config_summary "$BUNDLE_DIR/config-summary.txt"
 write_state_summary "$BUNDLE_DIR/app-state.txt"
@@ -325,11 +385,11 @@ write_state_summary "$BUNDLE_DIR/app-state.txt"
 safe_shell "$BUNDLE_DIR/os-session.txt" "collect OS and session info" '
 set +e
 date -Is 2>/dev/null || date
-uname -a
+uname -srmo
 printf "\n[/etc/os-release]\n"
 test -r /etc/os-release && cat /etc/os-release
 printf "\n[session]\n"
-id
+printf "uid=%s\ngid=%s\ngroups=%s\n" "$(id -u)" "$(id -g)" "$(id -G)"
 printf "SHELL=%s\nUSER=%s\nLOGNAME=%s\nXDG_SESSION_TYPE=%s\nXDG_CURRENT_DESKTOP=%s\nDESKTOP_SESSION=%s\nDISPLAY=%s\nWAYLAND_DISPLAY=%s\n" "${SHELL:-}" "${USER:-}" "${LOGNAME:-}" "${XDG_SESSION_TYPE:-}" "${XDG_CURRENT_DESKTOP:-}" "${DESKTOP_SESSION:-}" "${DISPLAY:-}" "${WAYLAND_DISPLAY:-}"
 if command -v loginctl >/dev/null 2>&1 && test -n "${XDG_SESSION_ID:-}"; then
   loginctl show-session "$XDG_SESSION_ID" --no-pager 2>/dev/null
@@ -342,21 +402,23 @@ if ! command -v systemctl >/dev/null 2>&1; then
   echo "systemctl not found"
   exit 0
 fi
-systemctl --user --no-pager status mwb-client.service inputflow.service 2>&1
+systemctl --user --no-pager --lines=0 status mwb-client.service inputflow.service 2>&1
 printf "\n[known matching units]\n"
 systemctl --user --no-pager list-units "mwb*" "inputflow*" 2>&1
 printf "\n[unit files]\n"
 systemctl --user --no-pager list-unit-files "mwb*" "inputflow*" 2>&1
 '
 
-safe_shell "$BUNDLE_DIR/journal-user-recent.txt" "collect recent user journal logs" '
+if [[ "$INCLUDE_JOURNAL" -eq 1 ]]; then
+  safe_shell "$BUNDLE_DIR/journal-user-recent.txt" "collect recent user journal logs" '
 set +e
 if ! command -v journalctl >/dev/null 2>&1; then
   echo "journalctl not found"
   exit 0
 fi
-journalctl --user --no-pager --since "2 hours ago" -u mwb-client.service -u inputflow.service -n 300 2>&1
+journalctl --user --no-pager --output=cat --since "2 hours ago" -u mwb-client.service -u inputflow.service -n 300 2>&1
 '
+fi
 
 safe_shell "$BUNDLE_DIR/uinput-state.txt" "collect uinput state" '
 set +e
@@ -364,7 +426,7 @@ printf "[device]\n"
 ls -l /dev/uinput 2>&1
 stat /dev/uinput 2>&1
 printf "\n[user groups]\n"
-id
+printf "uid=%s\ngid=%s\ngroups=%s\n" "$(id -u)" "$(id -g)" "$(id -G)"
 printf "\n[modules]\n"
 grep "^uinput " /proc/modules 2>/dev/null || true
 lsmod 2>/dev/null | grep -E "^uinput|uinput" || true
@@ -372,7 +434,8 @@ printf "\n[udev rules]\n"
 find /etc/udev/rules.d /usr/lib/udev/rules.d /lib/udev/rules.d -maxdepth 1 \( -iname "*uinput*" -o -iname "*inputflow*" -o -iname "*mwb*" \) -print -exec sh -c '"'"'for f; do echo "--- $f"; sed -n "1,120p" "$f"; done'"'"' sh {} + 2>/dev/null
 '
 
-safe_shell "$BUNDLE_DIR/network-hints.txt" "collect network hints" '
+if [[ "$INCLUDE_NETWORK" -eq 1 ]]; then
+  safe_shell "$BUNDLE_DIR/network-hints.txt" "collect network hints" '
 set +e
 hostnamectl 2>/dev/null || hostname 2>/dev/null
 printf "\n[addresses]\n"
@@ -387,9 +450,8 @@ if command -v ss >/dev/null 2>&1; then
 else
   echo "ss not found"
 fi
-printf "\n[host resolution]\n"
-getent hosts "$(hostname)" 2>/dev/null || true
 '
+fi
 
 safe_shell "$BUNDLE_DIR/package-build-info.txt" "collect package and build info" "
 set +e
@@ -404,7 +466,6 @@ for f in '$REPO_ROOT/build/mwb_client' '$REPO_ROOT/build/mwb_tray'; do
   if test -e \"\$f\"; then
     ls -l \"\$f\"
     file \"\$f\" 2>/dev/null || true
-    \"\$f\" --version 2>&1 || true
   else
     echo \"missing: \$f\"
   fi
@@ -423,15 +484,16 @@ fi
 "
 
 if [[ -x "$REPO_ROOT/build/mwb_client" ]]; then
-  safe_run "$BUNDLE_DIR/mwb-client-doctor.txt" "$REPO_ROOT/build/mwb_client" doctor --config "$CONFIG_PATH" --state "$STATE_PATH"
+  safe_run_bounded "$BUNDLE_DIR/mwb-client-doctor.txt" "$REPO_ROOT/build/mwb_client" doctor --config "$CONFIG_PATH" --state "$STATE_PATH"
 elif command -v mwb_client >/dev/null 2>&1; then
-  safe_run "$BUNDLE_DIR/mwb-client-doctor.txt" mwb_client doctor --config "$CONFIG_PATH" --state "$STATE_PATH"
+  safe_run_bounded "$BUNDLE_DIR/mwb-client-doctor.txt" mwb_client doctor --config "$CONFIG_PATH" --state "$STATE_PATH"
 else
   printf 'mwb_client executable not found at %s or in PATH\n' "$REPO_ROOT/build/mwb_client" >"$BUNDLE_DIR/mwb-client-doctor.txt"
 fi
 
 FINAL_PATH="$BUNDLE_DIR"
-if have tar; then
+find "$BUNDLE_DIR" -type f -exec chmod 600 {} + 2>/dev/null || true
+if [[ "$PREVIEW" -eq 0 ]] && have tar; then
   ARCHIVE_PATH="$OUTPUT_DIR/$BUNDLE_NAME.tar.gz"
   if tar -czf "$ARCHIVE_PATH" -C "$OUTPUT_DIR" "$BUNDLE_NAME" >/dev/null 2>&1; then
     rm -rf "$BUNDLE_DIR"
@@ -439,7 +501,7 @@ if have tar; then
   else
     log "warning: tar failed; leaving bundle directory unarchived"
   fi
-else
+elif [[ "$PREVIEW" -eq 0 ]]; then
   log "warning: tar not found; leaving bundle directory unarchived"
 fi
 

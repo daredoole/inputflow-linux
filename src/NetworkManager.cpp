@@ -264,7 +264,14 @@ std::optional<uint32_t> ResolveConfiguredHostAddress(const std::string& host) {
     hints.ai_socktype = SOCK_STREAM;
 
     struct addrinfo* results = nullptr;
-    if (getaddrinfo(host.c_str(), nullptr, &hints, &results) != 0 || results == nullptr) {
+    int status = getaddrinfo(host.c_str(), nullptr, &hints, &results);
+    if ((status != 0 || results == nullptr) &&
+        host.find('.') == std::string::npos && host != "localhost" && !host.empty()) {
+        // Bare hostname unresolved — retry the mDNS form (Windows answers .local).
+        if (results != nullptr) { freeaddrinfo(results); results = nullptr; }
+        status = getaddrinfo((host + ".local").c_str(), nullptr, &hints, &results);
+    }
+    if (status != 0 || results == nullptr) {
         return std::nullopt;
     }
 
@@ -589,7 +596,27 @@ bool connectToRemoteSocket(const std::string& host, int port, int& fd) {
 
     struct addrinfo* results = nullptr;
     const std::string service = std::to_string(port);
-    const int resolveStatus = getaddrinfo(host.c_str(), service.c_str(), &hints, &results);
+
+    // A bare Windows hostname (e.g. "M0491") has no DNS/NetBIOS record on Linux,
+    // but the same machine answers mDNS as "<name>.local". So if a dotless host
+    // fails to resolve, transparently retry the mDNS form before giving up.
+    std::vector<std::string> candidates{host};
+    if (host.find('.') == std::string::npos &&
+        host != "localhost" && !host.empty()) {
+        candidates.push_back(host + ".local");
+    }
+
+    int resolveStatus = EAI_NONAME;
+    for (const std::string& candidate : candidates) {
+        resolveStatus = getaddrinfo(candidate.c_str(), service.c_str(), &hints, &results);
+        if (resolveStatus == 0 && results != nullptr) {
+            break;
+        }
+        if (results != nullptr) {
+            freeaddrinfo(results);
+            results = nullptr;
+        }
+    }
     if (resolveStatus != 0 || results == nullptr) {
         if (resolveStatus != 0) {
             SetLastConnectError(std::string("name resolution failed: ") + gai_strerror(resolveStatus));
@@ -905,16 +932,14 @@ bool NetworkManager::HasActiveSessionPeer(uint32_t remoteMachineId) {
 bool NetworkManager::TryAcquireInboundControlSession(int fd, uint32_t remoteMachineId) {
     std::lock_guard<std::mutex> lock(m_inboundControlSessionMutex);
     if (m_activeInboundControlFd >= 0 && m_activeInboundControlFd != fd) {
-        std::cerr << "[SERVER] Rejecting authenticated inbound control session for peer 0x"
-                  << std::hex << remoteMachineId
-                  << ": another inbound control session is already active for this host."
-                  << std::dec << std::endl;
+        std::cerr << "[SERVER] Rejecting authenticated inbound control session: "
+                     "another session is already active."
+                  << std::endl;
         return false;
     }
 
     if (DebugNetworkLoggingEnabled()) {
-        std::cout << "[SERVER] Acquired inbound control session for peer 0x"
-                  << std::hex << remoteMachineId << std::dec << std::endl;
+        std::cout << "[SERVER] Acquired authenticated inbound control session." << std::endl;
     }
     m_activeInboundControlFd = fd;
     m_activeInboundControlRemoteMachineId = remoteMachineId;
@@ -978,8 +1003,8 @@ bool NetworkManager::TryRefreshHostFromResolver() {
         if (m_host == *resolved) {
             return false;
         }
-        std::cout << "[RECONNECT] Peer address changed to " << *resolved
-                  << " via rediscovery; resetting backoff." << std::endl;
+        std::cout << "[RECONNECT] Peer address changed via rediscovery; resetting backoff."
+                  << std::endl;
         m_host = *resolved;
     }
 
@@ -1147,13 +1172,11 @@ bool NetworkManager::ConnectOutbound(std::array<uint8_t, 16>& handshakeChallenge
 
     const std::string host = HostSnapshot();
     if (!connectToRemoteSocket(host, m_port, m_socket)) {
-        std::cerr << "[OUTBOUND] connect to " << host << ":" << m_port
-                  << " failed: " << GetLastConnectError() << std::endl;
+        std::cerr << "[OUTBOUND] Connection failed: " << GetLastConnectError() << std::endl;
         return false;
     }
 
-    printf("[OUTBOUND] Connected to %s:%d\n", host.c_str(), m_port);
-    fflush(stdout);
+    std::cout << "[OUTBOUND] Connected to the approved peer." << std::endl;
 
     if (const auto peerAddress = GetPeerIpv4Address(m_socket); peerAddress.has_value()) {
         m_expectedPeerAddress = *peerAddress;
@@ -1698,8 +1721,8 @@ void NetworkManager::RequestRemoteClipboard(uint32_t expectedRemoteMachineId) {
     const uint32_t remoteDestination = le32toh(remoteHeader.des);
     if (remoteSource != expectedRemoteMachineId ||
         !packetTargetsMachine(remoteDestination, m_myId)) {
-        std::cerr << "WARN: Rejecting clipboard pull handshake from unexpected remote peer 0x"
-                  << std::hex << remoteSource << std::dec << std::endl;
+        std::cerr << "WARN: Rejecting clipboard pull handshake from an unexpected peer."
+                  << std::endl;
         closeSocket(fd);
         return;
     }
@@ -1790,8 +1813,8 @@ void NetworkManager::PushClipboardToRemote(uint32_t expectedRemoteMachineId) {
     const uint32_t remoteDestination = le32toh(remoteHeader.des);
     if (remoteSource != expectedRemoteMachineId ||
         !packetTargetsMachine(remoteDestination, m_myId)) {
-        std::cerr << "WARN: Rejecting clipboard push handshake from unexpected remote peer 0x"
-                  << std::hex << remoteSource << std::dec << std::endl;
+        std::cerr << "WARN: Rejecting clipboard push handshake from an unexpected peer."
+                  << std::endl;
         closeSocket(fd);
         return;
     }
@@ -2209,8 +2232,8 @@ void NetworkManager::ServerListenerLoop() {
         }
 
         if (!AddressMatchesConfiguredHost(clientAddress, HostSnapshot(), m_expectedPeerAddress.load())) {
-            std::cerr << "[SERVER] Rejected inbound connection from unexpected peer "
-                      << FormatIpv4Address(clientAddress.sin_addr) << std::endl;
+            std::cerr << "[SERVER] Rejected inbound connection from an unexpected peer."
+                      << std::endl;
             closeSocket(clientFd);
             continue;
         }
@@ -2291,7 +2314,6 @@ void NetworkManager::HandleWindowsConnection(int fd) {
         return;
     }
 
-    int handshakePackets = 0;
     bool trusted = false;
     uint32_t remoteMachineId = 0;
 
@@ -2311,10 +2333,9 @@ void NetworkManager::HandleWindowsConnection(int fd) {
         const uint32_t destination = le32toh(packet.des);
 
         if (packet.type == static_cast<uint8_t>(PackageType::Handshake)) {
-            ++handshakePackets;
             if (!packetTargetsMachine(destination, m_myId)) {
-                std::cerr << "[SERVER] Ignoring handshake packet for unexpected destination 0x"
-                          << std::hex << destination << std::dec << std::endl;
+                std::cerr << "[SERVER] Ignoring handshake packet for an unexpected destination."
+                          << std::endl;
                 continue;
             }
             if (source != 0) {
@@ -2363,8 +2384,7 @@ void NetworkManager::HandleWindowsConnection(int fd) {
     }
     ownsInboundControlSession = true;
     if (DebugNetworkLoggingEnabled()) {
-        std::cout << "[SERVER] Inbound handshake trusted peer 0x"
-                  << std::hex << remoteMachineId << std::dec << std::endl;
+        std::cout << "[SERVER] Inbound handshake authenticated an approved peer." << std::endl;
     }
     RegisterActiveSessionPeer(remoteMachineId);
     MWBPacket heartbeat;
@@ -2421,9 +2441,8 @@ void NetworkManager::HandleWindowsConnection(int fd) {
         } else if (type == static_cast<uint8_t>(PackageType::Handshake) &&
                    packetTargetsMachine(destination, m_myId)) {
             if (!controlSourceMatchesBoundPeer) {
-                std::cerr << "[SERVER] Ignoring control handshake that claims a different peer id 0x"
-                          << std::hex << source << " for active peer 0x" << remoteMachineId
-                          << std::dec << std::endl;
+                std::cerr << "[SERVER] Ignoring control handshake with a mismatched peer id."
+                          << std::endl;
                 continue;
             }
             MWBPacket ack;
@@ -2439,9 +2458,8 @@ void NetworkManager::HandleWindowsConnection(int fd) {
                     type == static_cast<uint8_t>(PackageType::Awake)) &&
                    packetTargetsMachine(destination, m_myId)) {
             if (!controlSourceMatchesBoundPeer) {
-                std::cerr << "[SERVER] Ignoring control hello that claims a different peer id 0x"
-                          << std::hex << source << " for active peer 0x" << remoteMachineId
-                          << std::dec << std::endl;
+                std::cerr << "[SERVER] Ignoring control hello with a mismatched peer id."
+                          << std::endl;
                 continue;
             }
             MWBPacket heartbeat;

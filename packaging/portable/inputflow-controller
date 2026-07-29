@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+PACKAGE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+CONTROLLER="$PACKAGE_ROOT/libexec/inputflow/mwb-desktop-ui.sh"
+
+if [[ ! -x "$CONTROLLER" ]]; then
+  echo "InputFlow controller is missing: $CONTROLLER" >&2
+  exit 1
+fi
+
+PATH="$PACKAGE_ROOT/bin:$PATH" exec "$CONTROLLER" "${@:-menu}"

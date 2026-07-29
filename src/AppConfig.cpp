@@ -1,4 +1,5 @@
 #include "AppConfig.h"
+#include "SecureFile.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -618,40 +619,11 @@ std::string RenderSampleAppConfig() {
 bool WriteAppConfig(const std::filesystem::path& path,
                     const AppConfig& config,
                     std::string* errorMessage) {
-    try {
-        const std::filesystem::path parent = path.parent_path();
-        if (!parent.empty()) {
-            std::filesystem::create_directories(parent);
-        }
-
-        std::ofstream file(path, std::ios::out | std::ios::trunc);
-        if (!file) {
-            SetError(errorMessage, "Failed to open config file for writing: " + path.string());
-            return false;
-        }
-
-        file << RenderAppConfig(config);
-        if (!file) {
-            SetError(errorMessage, "Failed to write config file: " + path.string());
-            return false;
-        }
-        file.close();
-
-        std::error_code permissionError;
-        std::filesystem::permissions(
-            path,
-            std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-            std::filesystem::perm_options::replace,
-            permissionError);
-        if (permissionError) {
-            SetError(errorMessage, "Failed to secure config file permissions for '" + path.string() + "': " + permissionError.message());
-            return false;
-        }
-    } catch (const std::exception& ex) {
-        SetError(errorMessage, "Failed to write config file '" + path.string() + "': " + ex.what());
+    std::string writeError;
+    if (!WritePrivateFileAtomically(path, RenderAppConfig(config), writeError)) {
+        SetError(errorMessage, writeError);
         return false;
     }
-
     return true;
 }
 

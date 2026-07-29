@@ -72,7 +72,7 @@ class InputFlowAccessibilityService : AccessibilityService() {
         val x = frame.optInt("x")
         val y = frame.optInt("y")
         val mouseData = frame.optInt("mouseData")
-        if (loggedMouseFrames < 5) {
+        if (wParam == WM_MOUSEMOVE && loggedMouseFrames < 5) {
             Log.i(TAG, "mouse frame wParam=$wParam x=$x y=$y overlay=${cursorView != null}")
             loggedMouseFrames += 1
         }
@@ -538,7 +538,10 @@ class InputFlowAccessibilityService : AccessibilityService() {
             lineTo(toX, toY)
         }
         val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
-        dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
+        dispatchGesture(
+            GestureDescription.Builder().addStroke(stroke).build(),
+            null,
+            null)
     }
 
     private fun scroll(mouseData: Int) {

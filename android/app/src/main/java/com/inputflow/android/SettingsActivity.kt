@@ -161,25 +161,25 @@ class SettingsActivity : AppCompatActivity() {
     private fun requestShizuku() {
         try {
             if (!Shizuku.pingBinder()) {
-                injectStatusText.text = "Shizuku not running — install and start the Shizuku app first."
+                injectStatusText.setText(R.string.shizuku_not_running)
                 return
             }
             if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
                 updateInjectStatus()
             } else {
                 Shizuku.requestPermission(SHIZUKU_REQ)
-                injectStatusText.text = "Shizuku permission requested — approve, then reopen Settings."
+                injectStatusText.setText(R.string.shizuku_permission_requested)
             }
-        } catch (t: Throwable) {
-            injectStatusText.text = "Shizuku error: ${t.message}"
+        } catch (_: Throwable) {
+            injectStatusText.setText(R.string.shizuku_error)
         }
     }
 
     private fun requestRoot() {
-        injectStatusText.text = "Requesting root…"
+        injectStatusText.setText(R.string.root_requesting)
         Shell.getShell { shell ->
             runOnUiThread {
-                injectStatusText.text = if (shell.isRoot) "Root granted." else "Root denied."
+                injectStatusText.setText(if (shell.isRoot) R.string.root_granted else R.string.root_denied)
             }
         }
     }
@@ -190,8 +190,11 @@ class SettingsActivity : AppCompatActivity() {
                 Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
         } catch (_: Throwable) { false }
         val root = try { Shell.isAppGrantedRoot() == true } catch (_: Throwable) { false }
-        injectStatusText.text =
-            "Shizuku: ${if (shizuku) "ready" else "unavailable"}    Root: ${if (root) "ready" else "unavailable"}"
+        injectStatusText.text = getString(
+            R.string.injection_status,
+            getString(if (shizuku) R.string.injection_ready else R.string.injection_unavailable),
+            getString(if (root) R.string.injection_ready else R.string.injection_unavailable),
+        )
     }
 
     private fun sendTestNotification() {
@@ -201,14 +204,13 @@ class SettingsActivity : AppCompatActivity() {
             return
         }
 
-        val relay = RelayForegroundService.instance
-        if (relay?.isConnectedForWrites() != true) {
+        if (!RelayForegroundService.isConnectedForWrites()) {
             Toast.makeText(this, R.string.test_notification_not_connected, Toast.LENGTH_SHORT).show()
             return
         }
 
         val now = System.currentTimeMillis()
-        val sent = relay.sendNotificationUpsert(
+        val sent = RelayForegroundService.sendNotificationUpsert(
             stableId = "inputflow-test:$now",
             app = getString(R.string.app_name),
             packageName = packageName,

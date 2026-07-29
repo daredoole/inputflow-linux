@@ -15,9 +15,9 @@ class ShizukuInjectorService(private val context: Context) : IInjectorService.St
 
     override fun ping(): Boolean = true
 
-    override fun inject(event: InputEvent?): Boolean {
+    override fun inject(event: InputEvent?, mode: Int): Boolean {
         val e = event ?: return false
-        return SystemInject.inject(context, e)
+        return SystemInject.inject(context, e, mode)
     }
 
     // Called by Shizuku when the user service is torn down.

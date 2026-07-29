@@ -7,6 +7,7 @@
 #include "AppConfig.h"
 #include "AppState.h"
 #include "Discovery.h"
+#include "LibeiInputCaptureBridge.h"
 #include "PeerRecovery.h"
 #include "ReconnectPolicy.h"
 #include "ScreenGeometry.h"
@@ -185,6 +186,63 @@ void TestAndroidRelayFrames() {
     Expect(keyboardFrame.find("\"type\":\"keyboard\"") != std::string::npos, "Android keyboard frame should include type");
     Expect(keyboardFrame.find("\"vkCode\":65") != std::string::npos, "Android keyboard frame should include vkCode");
     Expect(keyboardFrame.find("\"flags\":128") != std::string::npos, "Android keyboard frame should include flags");
+
+    constexpr const char* message = "The quick brown fox jumps over the lazy dog";
+    constexpr const char* validHmac =
+        "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8";
+    Expect(
+        mwb::VerifyAndroidRelayHmac("key", message, validHmac),
+        "Android relay should accept a valid HMAC-SHA256 authenticator");
+    Expect(
+        !mwb::VerifyAndroidRelayHmac("key", message, std::string(64, '0')),
+        "Android relay should reject an incorrect authenticator");
+    Expect(
+        !mwb::VerifyAndroidRelayHmac("key", message, "short"),
+        "Android relay should reject an authenticator with the wrong length");
+
+    constexpr const char* nonce = "00112233445566778899aabbccddeeff";
+    const auto encrypted = mwb::EncryptAndroidRelayFrameForTest(
+        keyboardFrame,
+        "0123456789abcdef0123456789abcdef",
+        nonce,
+        0,
+        true);
+    Expect(encrypted.has_value(), "Android relay should encrypt a valid frame");
+    if (encrypted.has_value()) {
+        Expect(
+            encrypted->find("\"keyboard\"") == std::string::npos,
+            "Encrypted Android relay frames must not expose input metadata");
+        const auto decrypted = mwb::DecryptAndroidRelayFrameForTest(
+            *encrypted,
+            "0123456789abcdef0123456789abcdef",
+            nonce,
+            0,
+            true);
+        Expect(
+            decrypted == std::optional<std::string>(keyboardFrame),
+            "Android relay encrypted frames should round-trip");
+        Expect(
+            !mwb::DecryptAndroidRelayFrameForTest(
+                 *encrypted,
+                 "0123456789abcdef0123456789abcdef",
+                 nonce,
+                 1,
+                 true)
+                 .has_value(),
+            "Android relay should reject a replayed sequence");
+
+        std::string tampered = *encrypted;
+        tampered.back() ^= 1;
+        Expect(
+            !mwb::DecryptAndroidRelayFrameForTest(
+                 tampered,
+                 "0123456789abcdef0123456789abcdef",
+                 nonce,
+                 0,
+                 true)
+                 .has_value(),
+            "Android relay should reject tampered ciphertext");
+    }
 }
 
 void TestAppConfigKeyFileRoundTrip() {
@@ -406,6 +464,54 @@ void TestAppStateRoundTrip() {
     }
     std::error_code ignore;
     std::filesystem::remove(path, ignore);
+}
+
+void TestPrivateFileSecurity() {
+    const std::filesystem::path root = MakeTempPath("mwb-private-file-security");
+    std::error_code ignore;
+    std::filesystem::remove_all(root, ignore);
+    std::filesystem::create_directories(root);
+
+    mwb::AppConfig config;
+    config.host = "192.0.2.50";
+    config.key = "private-test-key";
+    const std::filesystem::path configPath = root / "config.ini";
+    std::string error;
+    Expect(mwb::WriteAppConfig(configPath, config, &error),
+           "WriteAppConfig should atomically write a private file");
+
+    const auto configPermissions = std::filesystem::status(configPath).permissions();
+    const auto nonOwnerPermissions =
+        std::filesystem::perms::group_all | std::filesystem::perms::others_all;
+    Expect((configPermissions & nonOwnerPermissions) == std::filesystem::perms::none,
+           "Config file must not grant group or other permissions");
+
+    mwb::AppState state;
+    state.localMachineId = 0x10203040;
+    const std::filesystem::path statePath = root / "state.ini";
+    Expect(mwb::SaveAppState(statePath, state, error),
+           "SaveAppState should atomically write a private file");
+    const auto statePermissions = std::filesystem::status(statePath).permissions();
+    Expect((statePermissions & nonOwnerPermissions) == std::filesystem::perms::none,
+           "State file must not grant group or other permissions");
+
+    const std::filesystem::path protectedTarget = root / "protected-target.txt";
+    {
+        std::ofstream target(protectedTarget);
+        target << "must remain unchanged";
+    }
+    const std::filesystem::path symlinkPath = root / "config-link.ini";
+    std::filesystem::create_symlink(protectedTarget, symlinkPath);
+    error.clear();
+    Expect(!mwb::WriteAppConfig(symlinkPath, config, &error),
+           "WriteAppConfig must reject a symlink destination");
+    std::ifstream protectedInput(protectedTarget);
+    std::string protectedContents;
+    std::getline(protectedInput, protectedContents);
+    Expect(protectedContents == "must remain unchanged",
+           "Rejected symlink write must not alter its target");
+
+    std::filesystem::remove_all(root, ignore);
 }
 
 void TestEnsureLocalMachineIdStable() {
@@ -660,6 +766,11 @@ void TestKScreenDoctorParserIgnoresAnsiSequences() {
            "KScreen parser should ignore ANSI color codes");
 }
 
+void TestLibeiPortalPermissionIsNotAutomaticallyRetried() {
+    Expect(mwb::kLibeiInputCaptureAutomaticSetupAttempts == 1,
+           "interactive libei portal setup must issue at most one automatic request");
+}
+
 } // namespace
 
 int main() {
@@ -672,6 +783,7 @@ int main() {
     TestParseAppConfigKeyFileOverridesInlineKey();
     TestParseAppConfigKeySecretIdOverridesKeyAndKeyFile();
     TestAppStateRoundTrip();
+    TestPrivateFileSecurity();
     TestEnsureLocalMachineIdStable();
     TestUpsertPeerState();
     TestSessionStateTransitions();
@@ -687,6 +799,7 @@ int main() {
     TestKScreenDoctorSingleOutputGeometry();
     TestKScreenDoctorMultiOutputBoundingBox();
     TestKScreenDoctorParserIgnoresAnsiSequences();
+    TestLibeiPortalPermissionIsNotAutomaticallyRetried();
 
     if (g_failures == 0) {
         std::cout << "All tests passed." << std::endl;

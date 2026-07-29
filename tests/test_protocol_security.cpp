@@ -277,6 +277,15 @@ void TestClipboardPayloadInvalidDeflateReturnsNullopt() {
            "Clipboard text decode should continue rejecting malformed compressed data");
 }
 
+void TestClipboardUnicodeRoundTrip() {
+    const std::string text = u8"InputFlow café — 设备 🫏";
+    const auto decoded =
+        mwb::ClipboardManager::DecodeTextPayload(mwb::ClipboardManager::EncodeTextPayload(text));
+    Expect(
+        decoded == std::optional<std::string>(text),
+        "Clipboard payload should round-trip BMP and supplementary Unicode text");
+}
+
 } // namespace
 
 int main() {
@@ -292,6 +301,7 @@ int main() {
     TestClipboardPayloadPrefersPlainTextOverHtml();
     TestClipboardDecodeNormalizesOffsetBasedCfHtml();
     TestClipboardPayloadInvalidDeflateReturnsNullopt();
+    TestClipboardUnicodeRoundTrip();
 
     if (g_failures != 0) {
         std::cerr << g_failures << " protocol security test(s) failed." << std::endl;
