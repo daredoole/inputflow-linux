@@ -1,23 +1,13 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
-  <rect x="72" y="72" width="880" height="880" rx="224" fill="#10B981"/>
-  <g transform="translate(0,28)">
-  <defs><mask id="tray-dk">
-    <rect width="1024" height="1024" fill="black"/>
-    <g fill="white">
-      <g transform="translate(450,432) rotate(-20)"><rect x="-42" y="-232" width="84" height="252" rx="42"/></g>
-      <g transform="translate(574,432) rotate(20)"><rect x="-42" y="-232" width="84" height="252" rx="42"/></g>
-      <path d="M474 446 q14 -64 38 -64 q24 0 38 64 q-38 -22 -76 0 Z"/>
-      <ellipse cx="512" cy="556" rx="156" ry="170"/>
-      <ellipse cx="512" cy="676" rx="110" ry="96"/>
-    </g>
-    <g fill="black">
-      <g transform="translate(450,432) rotate(-20)"><rect x="-20" y="-206" width="40" height="150" rx="20"/></g>
-      <g transform="translate(574,432) rotate(20)"><rect x="-20" y="-206" width="40" height="150" rx="20"/></g>
-      <ellipse cx="454" cy="540" rx="23" ry="29"/>
-      <ellipse cx="570" cy="540" rx="23" ry="29"/>
-      <rect x="479" y="668" width="12" height="30" rx="6" transform="rotate(-12 485 683)"/>
-      <rect x="533" y="668" width="12" height="30" rx="6" transform="rotate(12 539 683)"/>
-    </g>
-  </mask></defs>
-
-  <rect width="1024" height="1024" fill="#FFFFFF" mask="url(#tray-dk)"/></g></svg>
+  <rect x="72" y="72" width="880" height="880" rx="248" fill="#0F766E"/>
+  <g transform="translate(128,128) scale(0.75)">
+  <g fill="none" stroke="#FFFFFF" stroke-width="64" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="176" y="272" width="264" height="480" rx="64"/>
+    <rect x="584" y="272" width="264" height="480" rx="64"/>
+    <path d="M336 512 H688"/>
+    <path d="M624 448 L688 512 L624 576"/>
+  </g>
+  <g fill="#FFFFFF">
+    <circle cx="308" cy="656" r="18"/>
+    <circle cx="716" cy="656" r="18"/>
+  </g></g></svg>
