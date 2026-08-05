@@ -1,11 +1,8 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
-  <g fill="none" stroke="#172033" stroke-width="64" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="176" y="272" width="264" height="480" rx="64"/>
-    <rect x="584" y="272" width="264" height="480" rx="64"/>
-    <path d="M336 512 H688"/>
-    <path d="M624 448 L688 512 L624 576"/>
-  </g>
-  <g fill="#172033">
-    <circle cx="308" cy="656" r="18"/>
-    <circle cx="716" cy="656" r="18"/>
+  <g fill="#2E3440">
+    <g transform="translate(450,432) rotate(-20)"><rect x="-42" y="-232" width="84" height="252" rx="42"/></g>
+    <g transform="translate(574,432) rotate(20)"><rect x="-42" y="-232" width="84" height="252" rx="42"/></g>
+    <path d="M474 446 q14 -64 38 -64 q24 0 38 64 q-38 -22 -76 0 Z"/>
+    <ellipse cx="512" cy="556" rx="156" ry="170"/>
+    <ellipse cx="512" cy="676" rx="110" ry="96"/>
   </g></svg>
