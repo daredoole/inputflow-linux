@@ -12,6 +12,7 @@ endif()
 
 option(MWB_ENABLE_SANITIZERS "Build with compiler sanitizers for debug hardening" OFF)
 set(MWB_SANITIZERS "address,undefined" CACHE STRING "Comma-separated sanitizer list used when MWB_ENABLE_SANITIZERS=ON")
+option(MWB_ENABLE_FUZZING "Build coverage-guided security fuzz targets with Clang" OFF)
 
 if (MWB_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     include(CheckCXXSourceCompiles)
@@ -21,6 +22,10 @@ if (MWB_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     if (NOT MWB_SANITIZER_RUNTIME_AVAILABLE)
         message(FATAL_ERROR "MWB_ENABLE_SANITIZERS=ON, but the requested sanitizer runtime is not linkable by this compiler")
     endif()
+endif()
+
+if (MWB_ENABLE_FUZZING AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "MWB_ENABLE_FUZZING requires Clang and libFuzzer")
 endif()
 
 function(mwb_apply_sanitizers target)
@@ -212,6 +217,25 @@ if (BUILD_TESTING)
     )
     mwb_apply_sanitizers(mwb_clipboard_socket_security_tests)
 
+    add_executable(mwb_crypto_helper_tests
+        tests/test_crypto_helper.cpp
+        src/CryptoHelper.cpp
+    )
+    target_include_directories(mwb_crypto_helper_tests PRIVATE src)
+    target_compile_options(mwb_crypto_helper_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_link_libraries(mwb_crypto_helper_tests PRIVATE OpenSSL::Crypto)
+    mwb_apply_sanitizers(mwb_crypto_helper_tests)
+
+    add_executable(mwb_clipboard_fuzz_smoke
+        tests/fuzz_clipboard_payload.cpp
+        tests/fuzz_smoke_driver.cpp
+        src/ClipboardManager.cpp
+    )
+    target_include_directories(mwb_clipboard_fuzz_smoke PRIVATE src)
+    target_compile_options(mwb_clipboard_fuzz_smoke PRIVATE -Wall -Wextra -Wpedantic)
+    target_link_libraries(mwb_clipboard_fuzz_smoke PRIVATE ZLIB::ZLIB)
+    mwb_apply_sanitizers(mwb_clipboard_fuzz_smoke)
+
     add_test(NAME mwb_client_unit_tests COMMAND mwb_client_unit_tests)
     add_test(NAME mwb_input_mapping_tests COMMAND mwb_input_mapping_tests)
     add_test(NAME mwb_inject_mouse_abs_tests COMMAND mwb_inject_mouse_abs_tests)
@@ -224,11 +248,24 @@ if (BUILD_TESTING)
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/topology_config_docs_test.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/docs/topology.md"
         )
+        add_test(NAME inputflow_systemd_hardening
+            COMMAND "${PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_systemd_hardening.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/packaging/usr/lib/systemd/user/mwb-client.service"
+        )
+        add_test(NAME inputflow_ci_security
+            COMMAND "${PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_security.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/.github/workflows"
+        )
     endif()
     add_test(NAME mwb_mouse_trace_tests COMMAND mwb_mouse_trace_tests)
     add_test(NAME mwb_media_key_bridge_tests COMMAND mwb_media_key_bridge_tests)
     add_test(NAME mwb_protocol_security_tests COMMAND mwb_protocol_security_tests)
     add_test(NAME mwb_clipboard_socket_security_tests COMMAND mwb_clipboard_socket_security_tests)
+    add_test(NAME mwb_crypto_helper_tests COMMAND mwb_crypto_helper_tests)
+    add_test(NAME mwb_clipboard_fuzz_smoke COMMAND mwb_clipboard_fuzz_smoke)
+    set_tests_properties(mwb_clipboard_fuzz_smoke PROPERTIES TIMEOUT 30)
     add_test(NAME mwb_client_help COMMAND mwb_client --help)
     add_test(NAME mwb_client_doctor COMMAND mwb_client doctor --config "${CMAKE_CURRENT_BINARY_DIR}/missing-doctor-config.ini")
     add_test(NAME mwb_client_topology_explain
@@ -255,6 +292,23 @@ if (BUILD_TESTING)
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/inputflow-diagnostics-bundle.sh"
     )
     set_tests_properties(inputflow_diagnostics_privacy PROPERTIES TIMEOUT 30)
+endif()
+
+if (MWB_ENABLE_FUZZING)
+    add_executable(mwb_clipboard_fuzzer
+        tests/fuzz_clipboard_payload.cpp
+        src/ClipboardManager.cpp
+    )
+    target_include_directories(mwb_clipboard_fuzzer PRIVATE src)
+    target_compile_options(mwb_clipboard_fuzzer PRIVATE
+        -O1
+        -g
+        -fno-omit-frame-pointer
+        -fsanitize=fuzzer,address,undefined
+    )
+    set_property(TARGET mwb_clipboard_fuzzer APPEND_STRING PROPERTY
+        LINK_FLAGS " -fsanitize=fuzzer,address,undefined")
+    target_link_libraries(mwb_clipboard_fuzzer PRIVATE ZLIB::ZLIB)
 endif()
 
 if (PkgConfig_FOUND)

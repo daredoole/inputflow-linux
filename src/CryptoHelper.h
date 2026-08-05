@@ -18,13 +18,13 @@ public:
     bool EncryptStream(const std::vector<uint8_t>& plaintext, std::vector<uint8_t>& ciphertext);
     bool DecryptStream(const std::vector<uint8_t>& ciphertext, std::vector<uint8_t>& plaintext);
 
-    uint32_t Get24BitHash();
+    uint32_t Get24BitHash() const;
     void Reset();
 
 private:
-    std::string m_securityKey;
     std::vector<uint8_t> m_key;
     std::vector<uint8_t> m_iv;
+    uint32_t m_magicHash{0};
 
     EVP_CIPHER_CTX* m_encryptCtx;
     EVP_CIPHER_CTX* m_decryptCtx;

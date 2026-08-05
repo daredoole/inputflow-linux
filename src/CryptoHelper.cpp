@@ -1,18 +1,82 @@
 #include "CryptoHelper.h"
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
-#include <openssl/rand.h>
-#include <openssl/sha.h>
+#include <array>
+#include <memory>
 #include <stdexcept>
 #include <cstring>
-#include <iostream>
 #include <limits>
 
 namespace mwb {
+namespace {
 
-CryptoHelper::CryptoHelper(const std::string& securityKey) : m_securityKey(securityKey), m_encryptCtx(nullptr), m_decryptCtx(nullptr) {
-    if (m_securityKey.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+class CleanseGuard {
+public:
+    CleanseGuard(void* data, std::size_t size) : m_data(data), m_size(size) {}
+    ~CleanseGuard() { OPENSSL_cleanse(m_data, m_size); }
+
+    CleanseGuard(const CleanseGuard&) = delete;
+    CleanseGuard& operator=(const CleanseGuard&) = delete;
+
+private:
+    void* m_data;
+    std::size_t m_size;
+};
+
+void Cleanse(std::vector<uint8_t>& value) {
+    if (!value.empty()) {
+        OPENSSL_cleanse(value.data(), value.size());
+    }
+}
+
+uint32_t Compute24BitHash(const std::string& securityKey) {
+    std::array<uint8_t, 32> bytes{};
+    std::array<uint8_t, 64> hashValue{};
+    CleanseGuard bytesGuard(bytes.data(), bytes.size());
+    CleanseGuard hashGuard(hashValue.data(), hashValue.size());
+
+    for (std::size_t index = 0; index < bytes.size() && index < securityKey.size(); ++index) {
+        bytes[index] = static_cast<uint8_t>(securityKey[index]);
+    }
+
+    using DigestContext = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
+    DigestContext context(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+    if (!context) {
+        throw std::runtime_error("SHA512 context allocation failed");
+    }
+
+    unsigned int length = 0;
+    if (EVP_DigestInit_ex(context.get(), EVP_sha512(), nullptr) != 1 ||
+        EVP_DigestUpdate(context.get(), bytes.data(), bytes.size()) != 1 ||
+        EVP_DigestFinal_ex(context.get(), hashValue.data(), &length) != 1 ||
+        length != hashValue.size()) {
+        throw std::runtime_error("SHA512 hash failed");
+    }
+
+    for (int iteration = 0; iteration < 50000; ++iteration) {
+        if (EVP_DigestInit_ex(context.get(), EVP_sha512(), nullptr) != 1 ||
+            EVP_DigestUpdate(context.get(), hashValue.data(), hashValue.size()) != 1 ||
+            EVP_DigestFinal_ex(context.get(), hashValue.data(), &length) != 1 ||
+            length != hashValue.size()) {
+            throw std::runtime_error("SHA512 hash failed");
+        }
+    }
+
+    // Match C# Encryption.Get24BitHash exactly.
+    return (static_cast<uint32_t>(hashValue[0]) << 23) +
+           (static_cast<uint32_t>(hashValue[1]) << 16) +
+           (static_cast<uint32_t>(hashValue[63]) << 8) +
+           static_cast<uint32_t>(hashValue[2]);
+}
+
+} // namespace
+
+CryptoHelper::CryptoHelper(const std::string& securityKey) : m_encryptCtx(nullptr), m_decryptCtx(nullptr) {
+    if (securityKey.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         throw std::runtime_error("Security key is too large");
     }
+
+    m_magicHash = Compute24BitHash(securityKey);
 
     std::string ivStr = "1844674407370955";
     m_iv.resize(16);
@@ -26,10 +90,11 @@ CryptoHelper::CryptoHelper(const std::string& securityKey) : m_securityKey(secur
     }
 
     m_key.resize(32);
-    if (!PKCS5_PBKDF2_HMAC(m_securityKey.c_str(), static_cast<int>(m_securityKey.length()),
+    if (!PKCS5_PBKDF2_HMAC(securityKey.c_str(), static_cast<int>(securityKey.length()),
                            salt.data(), static_cast<int>(salt.size()),
                            50000, EVP_sha512(),
                            32, m_key.data())) {
+        Cleanse(m_key);
         throw std::runtime_error("PBKDF2 HMAC Failed");
     }
 
@@ -42,6 +107,8 @@ CryptoHelper::CryptoHelper(const std::string& securityKey) : m_securityKey(secur
             EVP_CIPHER_CTX_free(m_decryptCtx);
             m_decryptCtx = nullptr;
         }
+        Cleanse(m_key);
+        Cleanse(m_iv);
         throw std::runtime_error(message);
     };
 
@@ -63,47 +130,12 @@ CryptoHelper::CryptoHelper(const std::string& securityKey) : m_securityKey(secur
 CryptoHelper::~CryptoHelper() {
     if (m_encryptCtx) EVP_CIPHER_CTX_free(m_encryptCtx);
     if (m_decryptCtx) EVP_CIPHER_CTX_free(m_decryptCtx);
+    Cleanse(m_key);
+    Cleanse(m_iv);
 }
 
-uint32_t CryptoHelper::Get24BitHash() {
-    std::vector<uint8_t> bytes(32, 0);
-    for (size_t i = 0; i < 32 && i < m_securityKey.length(); i++) {
-        bytes[i] = static_cast<uint8_t>(m_securityKey[i]);
-    }
-
-    std::vector<uint8_t> hashValue(64);
-    unsigned int len = 0;
-    EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
-    if (mdctx == nullptr) {
-        throw std::runtime_error("SHA512 context allocation failed");
-    }
-
-    if (EVP_DigestInit_ex(mdctx, EVP_sha512(), nullptr) != 1 ||
-        EVP_DigestUpdate(mdctx, bytes.data(), bytes.size()) != 1 ||
-        EVP_DigestFinal_ex(mdctx, hashValue.data(), &len) != 1 ||
-        len != hashValue.size()) {
-        EVP_MD_CTX_free(mdctx);
-        throw std::runtime_error("SHA512 hash failed");
-    }
-
-    for (int i = 0; i < 50000; i++) {
-        if (EVP_DigestInit_ex(mdctx, EVP_sha512(), nullptr) != 1 ||
-            EVP_DigestUpdate(mdctx, hashValue.data(), hashValue.size()) != 1 ||
-            EVP_DigestFinal_ex(mdctx, hashValue.data(), &len) != 1 ||
-            len != hashValue.size()) {
-            EVP_MD_CTX_free(mdctx);
-            throw std::runtime_error("SHA512 hash failed");
-        }
-    }
-    EVP_MD_CTX_free(mdctx);
-
-    // Match C# Encryption.Get24BitHash exactly:
-    // return (uint)((hashValue[0] << 23) + (hashValue[1] << 16) + (hashValue[^1] << 8) + hashValue[2]);
-    uint32_t magic = (static_cast<uint32_t>(hashValue[0]) << 23) +
-                     (static_cast<uint32_t>(hashValue[1]) << 16) +
-                     (static_cast<uint32_t>(hashValue[63]) << 8) +
-                     static_cast<uint32_t>(hashValue[2]);
-    return magic;
+uint32_t CryptoHelper::Get24BitHash() const {
+    return m_magicHash;
 }
 
 void CryptoHelper::Reset() {

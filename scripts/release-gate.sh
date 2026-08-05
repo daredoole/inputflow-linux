@@ -60,9 +60,15 @@ echo "[9/9] SBOM, provenance, and release checksums"
 if [[ "${INPUTFLOW_SKIP_ANDROID:-0}" == "1" ]]; then
   echo "Release metadata skipped because the Android artifact was skipped"
 else
-  python3 scripts/generate-release-metadata.py \
-    --build-dir "$BUILD_DIR" \
-    --android-apk android/app/build/outputs/apk/release/app-release-unsigned.apk
+  ANDROID_APK="${INPUTFLOW_ANDROID_APK:-android/app/build/outputs/apk/release/app-release-unsigned.apk}"
+  METADATA_ARGS=(
+    --build-dir "$BUILD_DIR"
+    --android-apk "$ANDROID_APK"
+  )
+  if [[ "${INPUTFLOW_REQUIRE_SIGNED_ANDROID:-0}" == "1" ]]; then
+    METADATA_ARGS+=(--require-signed-android)
+  fi
+  python3 scripts/generate-release-metadata.py "${METADATA_ARGS[@]}"
 fi
 
 echo "InputFlow release gate passed"

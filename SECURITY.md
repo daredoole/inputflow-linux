@@ -11,13 +11,17 @@ Security fixes should target the current `main` branch.
 If you discover a vulnerability that could expose input, clipboard data, or pairing secrets:
 
 1. Do not open a public issue with exploit details.
-2. Send a private report to the maintainers with:
+2. Open a [private vulnerability report](https://github.com/daredoole/inputflow-linux/security/advisories/new) with:
    - affected commit or release
    - reproduction steps
    - impact assessment
    - logs or packet traces with keys and hostnames removed
 
-If no private contact channel is published yet, open a minimal public issue that only asks for a secure disclosure path and avoid technical detail.
+Maintainers aim to acknowledge reports within three business days, provide an
+initial severity assessment within seven days, and keep reporters updated at
+least every fourteen days until resolution. Remediation timing depends on
+severity and compatibility impact; actively exploited critical issues take
+priority over the normal release cadence.
 
 ## Security guidance for users
 
@@ -43,3 +47,6 @@ If no private contact channel is published yet, open a minimal public issue that
 - The upstream PowerToys protocol uses AES-256-CBC framing but does not provide a modern end-to-end authenticated channel.
 - Full AEAD or MAC-based integrity would require a protocol change on both the Linux client and the PowerToys side.
 - Public beta users should treat InputFlow as a trusted-LAN tool, not an internet-exposed remote-control service.
+
+The production threat model and mandatory release evidence are documented in
+[`docs/production-security.md`](docs/production-security.md).

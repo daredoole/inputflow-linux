@@ -2,13 +2,37 @@
 Description=InputFlow Linux client
 Documentation=man:systemd.service(5)
 ConditionPathExists=%h/.config/mwb-client/config.ini
+StartLimitIntervalSec=60s
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/mwb_client run --config %h/.config/mwb-client/config.ini
 Restart=on-failure
 RestartSec=3s
+TimeoutStopSec=15s
 NoNewPrivileges=true
+UMask=0077
+PrivateTmp=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LimitCORE=0
+LimitNOFILE=4096
+TasksMax=128
+MemoryMax=1G
+MemorySwapMax=1G
 
 [Install]
 WantedBy=default.target

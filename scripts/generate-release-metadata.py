@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
 import pathlib
 import platform
 import re
@@ -95,10 +96,35 @@ def copy_artifact(source: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
     return target
 
 
+def apk_is_signed(apk: pathlib.Path, repo: pathlib.Path) -> bool:
+    apksigner = shutil.which("apksigner")
+    if not apksigner:
+        sdk_root = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+        if sdk_root:
+            candidates = sorted(
+                pathlib.Path(sdk_root).glob("build-tools/*/apksigner"),
+                reverse=True,
+            )
+            if candidates:
+                apksigner = str(candidates[0])
+    if not apksigner:
+        return False
+    result = subprocess.run(
+        [apksigner, "verify", "--verbose", "--print-certs", str(apk)],
+        cwd=repo,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.returncode == 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build-dir", default="build")
     parser.add_argument("--android-apk")
+    parser.add_argument("--require-signed-android", action="store_true")
     args = parser.parse_args()
 
     repo = pathlib.Path(__file__).resolve().parent.parent
@@ -117,14 +143,21 @@ def main() -> int:
     )
     if not apk_source.is_file():
         raise SystemExit(f"Android release APK is missing: {apk_source}")
+    android_signed = apk_is_signed(apk_source, repo)
+    if args.require_signed_android and not android_signed:
+        raise SystemExit(
+            "Production release requires an APK verified by apksigner; "
+            "set INPUTFLOW_ANDROID_APK to the signed artifact"
+        )
 
     copied = [
         copy_artifact(archives[0], release_dir),
         copy_artifact(apk_source, release_dir),
         copy_artifact(repo / "CHANGELOG.md", release_dir),
     ]
-    copied[1].rename(release_dir / f"inputflow-android-{version}-unsigned.apk")
-    copied[1] = release_dir / f"inputflow-android-{version}-unsigned.apk"
+    android_suffix = "" if android_signed else "-unsigned"
+    copied[1].rename(release_dir / f"inputflow-android-{version}{android_suffix}.apk")
+    copied[1] = release_dir / f"inputflow-android-{version}{android_suffix}.apk"
 
     timestamp = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
     native_binary = build_dir / "mwb_client"
@@ -169,7 +202,7 @@ def main() -> int:
                 "externalParameters": {
                     "version": version,
                     "linuxBuildType": "Release",
-                    "androidArtifactSigned": False,
+                    "androidArtifactSigned": android_signed,
                 },
                 "internalParameters": {"workingTreeDirty": dirty},
                 "resolvedDependencies": (
@@ -197,7 +230,10 @@ def main() -> int:
     checksum_text = "".join(f"{sha256(path)}  {path.name}\n" for path in checksum_paths)
     (release_dir / "SHA256SUMS").write_text(checksum_text, encoding="utf-8")
     print(f"release metadata generated in {release_dir}")
-    print("Android APK is unsigned; sign and verify it before publication.")
+    if android_signed:
+        print("Android APK signature verified with apksigner.")
+    else:
+        print("Android APK is unsigned; it is a test artifact and must not be published.")
     return 0
 
 
