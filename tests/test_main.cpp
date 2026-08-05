@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -443,6 +444,8 @@ void TestAppStateRoundTrip() {
         true,
         111,
         222,
+        0x89abcdefU,
+        {"192.0.2.106", "windows-box.local"},
     });
 
     const std::filesystem::path path = MakeTempPath("mwb-state-test.ini");
@@ -461,6 +464,30 @@ void TestAppStateRoundTrip() {
         Expect(peer.connectedNow, "State peer connectedNow round-trip");
         Expect(peer.lastSeenEpochSeconds == 111, "State peer lastSeen round-trip");
         Expect(peer.lastConnectedEpochSeconds == 222, "State peer lastConnected round-trip");
+        Expect(peer.remoteMachineId == 0x89abcdefU, "State remote machine id round-trip");
+        Expect(peer.previousHosts.size() == 2, "State previous host aliases round-trip");
+    }
+    std::error_code ignore;
+    std::filesystem::remove(path, ignore);
+}
+
+void TestLegacyAppStateMigration() {
+    const std::filesystem::path path = MakeTempPath("mwb-state-legacy-test.ini");
+    {
+        std::ofstream output(path);
+        output << "local_machine_id=0x1234abcd\n"
+               << "peer=192.0.2.107\twindows-box\t15101\ttrue\tfalse\t111\t222\n";
+    }
+
+    mwb::AppState loaded;
+    std::string error;
+    Expect(mwb::LoadAppState(path, loaded, error), "Legacy seven-field state should migrate");
+    Expect(loaded.peers.size() == 1, "Legacy state should retain its peer");
+    if (!loaded.peers.empty()) {
+        Expect(loaded.peers.front().remoteMachineId == 0,
+               "Legacy peer should remain identity-unknown until authentication");
+        Expect(loaded.peers.front().previousHosts.empty(),
+               "Legacy peer should start without address aliases");
     }
     std::error_code ignore;
     std::filesystem::remove(path, ignore);
@@ -535,6 +562,28 @@ void TestUpsertPeerState() {
         Expect(peer.lastSeenEpochSeconds == 200, "UpsertPeerState should keep newest lastSeen");
         Expect(peer.lastConnectedEpochSeconds == 300, "UpsertPeerState should keep newest lastConnected");
     }
+
+    mwb::AppState identityState;
+    mwb::PeerState original{"192.0.2.161", "desktop", 15101, true, false, 100, 200};
+    original.remoteMachineId = 0x10203040U;
+    mwb::UpsertPeerState(identityState, original);
+    mwb::PeerState moved{"192.0.2.160", "desktop", 15101, true, true, 300, 300};
+    moved.remoteMachineId = 0x10203040U;
+    mwb::UpsertPeerState(identityState, moved);
+    Expect(identityState.peers.size() == 1,
+           "UpsertPeerState should merge endpoints by authenticated machine id");
+    if (!identityState.peers.empty()) {
+        const auto& peer = identityState.peers.front();
+        Expect(peer.host == "192.0.2.160", "Identity merge should adopt the current address");
+        Expect(peer.previousHosts.size() == 1 && peer.previousHosts.front() == "192.0.2.161",
+               "Identity merge should retain the stale configured address as an alias");
+    }
+
+    mwb::PeerState replacement{"192.0.2.160", "replacement", 15101, true, true, 400, 400};
+    replacement.remoteMachineId = 0xaabbccddU;
+    mwb::UpsertPeerState(identityState, replacement);
+    Expect(identityState.peers.size() == 2,
+           "A reused address with a different authenticated identity must not overwrite the original peer");
 }
 
 void TestSessionStateTransitions() {
@@ -543,7 +592,8 @@ void TestSessionStateTransitions() {
     state.peers.push_back(mwb::PeerState{"192.0.2.10", "old", 15101, true, true, 100, 200});
     state.peers.push_back(mwb::PeerState{"192.0.2.11", "other", 15101, true, true, 100, 200});
 
-    mwb::MarkSessionEstablished(state, "192.0.2.12", 15101, "fresh", 0x22222222u, 300);
+    mwb::MarkSessionEstablished(
+        state, "192.0.2.12", 15101, "fresh", 0xabcdef01u, 0x22222222u, 300);
 
     Expect(state.localMachineId == 0x22222222u, "Session establishment should update the local machine id");
     int connectedPeers = 0;
@@ -559,6 +609,8 @@ void TestSessionStateTransitions() {
         Expect(connectedPeer->host == "192.0.2.12", "Session establishment should mark the connected host");
         Expect(connectedPeer->name == "fresh", "Session establishment should store the remote name");
         Expect(connectedPeer->approved, "Session establishment should approve the authenticated peer");
+        Expect(connectedPeer->remoteMachineId == 0xabcdef01u,
+               "Session establishment should persist the authenticated remote machine id");
         Expect(connectedPeer->lastConnectedEpochSeconds == 300,
                "Session establishment should update last connected time");
     }
@@ -718,6 +770,100 @@ void TestCollectRecoveryDiscoveredHostsUsesApprovedNamesOnly() {
     }
 }
 
+void TestCollectRecoveryUnidentifiedHostsExcludesKnownOtherPeers() {
+    mwb::AppState state;
+    state.peers.push_back(mwb::PeerState{"192.0.2.107", "WORK-PC", 15101, true, false, 100, 300});
+    state.peers.push_back(mwb::PeerState{"192.0.2.254", "OTHER-PC", 15101, true, false, 110, 400});
+
+    std::vector<mwb::DiscoveryCandidate> candidates;
+    candidates.push_back(mwb::DiscoveryCandidate{
+        "192.0.2.160", "", false, "eth0", mwb::DiscoveryStatus::Open,
+    });
+    candidates.push_back(mwb::DiscoveryCandidate{
+        "192.0.2.254", "", false, "eth0", mwb::DiscoveryStatus::Open,
+    });
+    candidates.push_back(mwb::DiscoveryCandidate{
+        "192.0.2.199", "NAMED-PC", false, "eth0", mwb::DiscoveryStatus::Open,
+    });
+
+    const auto hosts =
+        mwb::CollectRecoveryUnidentifiedHosts(state, "192.0.2.107", 15101, candidates);
+    Expect(hosts.size() == 1,
+           "Unnamed recovery should exclude cached addresses belonging to another approved peer");
+    if (!hosts.empty()) {
+        Expect(hosts.front() == "192.0.2.160",
+               "Unnamed recovery should retain the sole unclaimed candidate for authenticated probing");
+    }
+}
+
+void TestIdentityAwareRecoveryPlanForMovedPeer() {
+    mwb::AppConfig config;
+    config.host = "192.0.2.161";
+    config.port = 15101;
+
+    mwb::AppState state;
+    mwb::PeerState intended{"192.0.2.160", "M0491", 15101, true, false, 200, 300};
+    intended.remoteMachineId = 0x10203040U;
+    intended.previousHosts = {"192.0.2.161"};
+    state.peers.push_back(intended);
+    mwb::PeerState other{"192.0.2.254", "OTHER-PC", 15101, true, false, 250, 400};
+    other.remoteMachineId = 0x55667788U;
+    state.peers.push_back(other);
+
+    std::vector<mwb::DiscoveryCandidate> candidates;
+    candidates.push_back(mwb::DiscoveryCandidate{
+        "192.0.2.160", "", false, "eth0", mwb::DiscoveryStatus::Open,
+    });
+    candidates.push_back(mwb::DiscoveryCandidate{
+        "192.0.2.254", "", false, "eth0", mwb::DiscoveryStatus::Open,
+    });
+
+    const auto plan = mwb::BuildPeerRecoveryPlanFromCandidates(config, state, candidates);
+    Expect(plan.expectedRemoteMachineId == 0x10203040U,
+           "Recovery should derive the intended identity from a previous configured address");
+    Expect(!plan.candidateHosts.empty() && plan.candidateHosts.front() == "192.0.2.160",
+           "Recovery should prefer the last authenticated endpoint for the intended identity");
+    Expect(std::find(plan.candidateHosts.begin(), plan.candidateHosts.end(), "192.0.2.254") !=
+               plan.candidateHosts.end(),
+           "Identity-aware recovery may probe other open endpoints because the handshake rejects a mismatch");
+}
+
+void TestAmbiguousConfiguredAddressHasNoExpectedIdentity() {
+    mwb::AppState state;
+    mwb::PeerState first{"192.0.2.160", "FIRST", 15101, true, false, 100, 100};
+    first.remoteMachineId = 0x11111111U;
+    first.previousHosts = {"192.0.2.161"};
+    state.peers.push_back(first);
+    mwb::PeerState second{"192.0.2.170", "SECOND", 15101, true, false, 100, 100};
+    second.remoteMachineId = 0x22222222U;
+    second.previousHosts = {"192.0.2.161"};
+    state.peers.push_back(second);
+
+    Expect(mwb::FindExpectedRemoteMachineId(state, "192.0.2.161", 15101) == 0,
+           "Conflicting identity aliases must not select a peer automatically");
+}
+
+void TestIdentityAwareHostnameRecoveryIncludesUnnamedCandidates() {
+    mwb::AppConfig config;
+    config.host = "M0491";
+    config.port = 15101;
+
+    mwb::AppState state;
+    mwb::PeerState intended{"192.0.2.160", "M0491", 15101, true, false, 200, 300};
+    intended.remoteMachineId = 0x10203040U;
+    state.peers.push_back(intended);
+
+    const std::vector<mwb::DiscoveryCandidate> candidates = {
+        {"192.0.2.170", "", false, "eth0", mwb::DiscoveryStatus::Open},
+    };
+    const auto plan = mwb::BuildPeerRecoveryPlanFromCandidates(config, state, candidates);
+    Expect(plan.expectedRemoteMachineId == 0x10203040U,
+           "Hostname recovery should resolve the saved authenticated machine id");
+    Expect(std::find(plan.candidateHosts.begin(), plan.candidateHosts.end(), "192.0.2.170") !=
+               plan.candidateHosts.end(),
+           "Hostname recovery should probe unnamed endpoints when identity verification is available");
+}
+
 void TestDiscoveryZeroHosts() {
     mwb::DiscoveryOptions options;
     options.maxHostsPerSubnet = 0;
@@ -783,6 +929,7 @@ int main() {
     TestParseAppConfigKeyFileOverridesInlineKey();
     TestParseAppConfigKeySecretIdOverridesKeyAndKeyFile();
     TestAppStateRoundTrip();
+    TestLegacyAppStateMigration();
     TestPrivateFileSecurity();
     TestEnsureLocalMachineIdStable();
     TestUpsertPeerState();
@@ -795,6 +942,10 @@ int main() {
     TestCollectRecoveryCandidateHostsForConfiguredIpv4();
     TestCollectRecoveryCandidateHostsForConfiguredHostname();
     TestCollectRecoveryDiscoveredHostsUsesApprovedNamesOnly();
+    TestCollectRecoveryUnidentifiedHostsExcludesKnownOtherPeers();
+    TestIdentityAwareRecoveryPlanForMovedPeer();
+    TestAmbiguousConfiguredAddressHasNoExpectedIdentity();
+    TestIdentityAwareHostnameRecoveryIncludesUnnamedCandidates();
     TestDiscoveryZeroHosts();
     TestKScreenDoctorSingleOutputGeometry();
     TestKScreenDoctorMultiOutputBoundingBox();

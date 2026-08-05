@@ -4,11 +4,32 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mwb {
 
 struct PeerState {
+    PeerState() = default;
+    PeerState(std::string hostValue,
+              std::string nameValue,
+              int portValue,
+              bool approvedValue,
+              bool connectedNowValue,
+              std::int64_t lastSeenValue,
+              std::int64_t lastConnectedValue,
+              uint32_t remoteMachineIdValue = 0,
+              std::vector<std::string> previousHostsValue = {})
+        : host(std::move(hostValue)),
+          name(std::move(nameValue)),
+          port(portValue),
+          approved(approvedValue),
+          connectedNow(connectedNowValue),
+          lastSeenEpochSeconds(lastSeenValue),
+          lastConnectedEpochSeconds(lastConnectedValue),
+          remoteMachineId(remoteMachineIdValue),
+          previousHosts(std::move(previousHostsValue)) {}
+
     std::string host;
     std::string name;
     int port{15101};
@@ -16,6 +37,8 @@ struct PeerState {
     bool connectedNow{false};
     std::int64_t lastSeenEpochSeconds{0};
     std::int64_t lastConnectedEpochSeconds{0};
+    uint32_t remoteMachineId{0};
+    std::vector<std::string> previousHosts;
 };
 
 struct AppState {
@@ -40,6 +63,7 @@ void MarkSessionEstablished(
     const std::string& host,
     int port,
     const std::string& remoteName,
+    uint32_t remoteMachineId,
     uint32_t localMachineId,
     std::int64_t epochSeconds);
 void MarkSessionDisconnected(AppState& state);

@@ -385,6 +385,7 @@ int ClientRuntime::Run() {
             m_options.reconnectInitialBackoffMs,
             m_options.reconnectMaxBackoffMs,
             m_options.reconnectIdleRetryMs);
+        m_network->SetExpectedRemoteMachineId(m_options.expectedRemoteMachineId);
         if (m_options.resolveHost) {
             m_network->SetHostResolver(m_options.resolveHost);
         }

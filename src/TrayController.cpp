@@ -969,10 +969,12 @@ int RunTrayAndGui(const std::string& binary,
         options.androidRelay.notificationSyncEnabled = runtimeConfig.notificationSyncEnabled;
 
         options.onSessionEstablished = [&](const std::string& host, int port,
-                                           const std::string& remoteName, uint32_t, uint32_t localMachineId) {
+                                           const std::string& remoteName, uint32_t remoteMachineId,
+                                           uint32_t localMachineId) {
             {
                 std::lock_guard<std::mutex> lock(stateMutex);
-                MarkSessionEstablished(state, host, port, remoteName, localMachineId, CurrentEpochSeconds());
+                MarkSessionEstablished(
+                    state, host, port, remoteName, remoteMachineId, localMachineId, CurrentEpochSeconds());
                 SaveStateOrLog(statePath, state);
             }
             PostStatus(&context, mainWin, "active", host + ":" + std::to_string(port) + " (" + remoteName + ")");
@@ -1007,9 +1009,12 @@ int RunTrayAndGui(const std::string& binary,
         // DHCP lease is rediscovered without restarting the daemon.
         if (PowerToysCompatibilityEnabled(runtimeConfig.connectionMode)) {
             const AppConfig resolverConfig = config;
-            options.resolveHost = [resolverConfig, &state, &stateMutex]() -> std::optional<std::string> {
+            options.expectedRemoteMachineId =
+                FindExpectedRemoteMachineId(state, resolverConfig.host, resolverConfig.port);
+            options.resolveHost = [resolverConfig, &state, &stateMutex]() -> PeerHostResolution {
                 std::lock_guard<std::mutex> lock(stateMutex);
-                return RecoverConfiguredHostFromKnownPeers(resolverConfig, state);
+                PeerRecoveryPlan plan = BuildPeerRecoveryPlan(resolverConfig, state);
+                return PeerHostResolution{plan.expectedRemoteMachineId, std::move(plan.candidateHosts)};
             };
         }
 

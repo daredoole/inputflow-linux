@@ -161,7 +161,9 @@ std::vector<std::string> CollectRecoveryPeerNames(const AppState& state,
         }
 
         if (IsIpv4Literal(configuredHost)) {
-            if (peer.host != configuredHost) {
+            if (peer.host != configuredHost &&
+                std::find(peer.previousHosts.begin(), peer.previousHosts.end(), configuredHost) ==
+                    peer.previousHosts.end()) {
                 continue;
             }
         } else if (!HostLabelsMatch(peer.name, configuredHost) && !HostLabelsMatch(peer.host, configuredHost)) {
@@ -301,8 +303,178 @@ std::vector<std::string> CollectRecoveryDiscoveredHosts(const AppState& state,
     return hosts;
 }
 
+std::vector<std::string> CollectRecoveryUnidentifiedHosts(
+    const AppState& state,
+    std::string_view configuredHost,
+    int port,
+    const std::vector<DiscoveryCandidate>& candidates) {
+    const std::vector<std::string> recoveryNames = CollectRecoveryPeerNames(state, configuredHost, port);
+    if (recoveryNames.empty()) {
+        return {};
+    }
+
+    std::vector<std::string> normalizedNames;
+    normalizedNames.reserve(recoveryNames.size());
+    for (const auto& name : recoveryNames) {
+        const std::string normalized = NormalizeHostLabel(name);
+        if (!normalized.empty()) {
+            normalizedNames.push_back(normalized);
+        }
+    }
+
+    std::vector<std::string> hosts;
+    for (const auto& candidate : candidates) {
+        if (candidate.status != DiscoveryStatus::Open ||
+            !candidate.hostName.empty() ||
+            !IsIpv4Literal(candidate.ipAddress) ||
+            candidate.ipAddress == configuredHost) {
+            continue;
+        }
+
+        const auto knownPeer = std::find_if(state.peers.begin(), state.peers.end(), [&](const PeerState& peer) {
+            return peer.approved && peer.port == port && peer.host == candidate.ipAddress && !peer.name.empty();
+        });
+        if (knownPeer != state.peers.end()) {
+            const std::string normalized = NormalizeHostLabel(knownPeer->name);
+            if (std::find(normalizedNames.begin(), normalizedNames.end(), normalized) == normalizedNames.end()) {
+                continue;
+            }
+        }
+
+        if (std::find(hosts.begin(), hosts.end(), candidate.ipAddress) == hosts.end()) {
+            hosts.push_back(candidate.ipAddress);
+        }
+    }
+
+    return hosts;
+}
+
+uint32_t FindExpectedRemoteMachineId(const AppState& state,
+                                     std::string_view configuredHost,
+                                     int port) {
+    uint32_t expectedRemoteMachineId = 0;
+    for (const auto& peer : state.peers) {
+        if (!peer.approved || peer.port != port || peer.remoteMachineId == 0) {
+            continue;
+        }
+
+        bool matches = peer.host == configuredHost;
+        if (!matches) {
+            matches = std::find(peer.previousHosts.begin(), peer.previousHosts.end(), configuredHost) !=
+                      peer.previousHosts.end();
+        }
+        if (!matches && !IsIpv4Literal(configuredHost)) {
+            matches = HostLabelsMatch(peer.name, configuredHost) || HostLabelsMatch(peer.host, configuredHost);
+        }
+        if (!matches) {
+            continue;
+        }
+
+        if (expectedRemoteMachineId != 0 && expectedRemoteMachineId != peer.remoteMachineId) {
+            return 0;
+        }
+        expectedRemoteMachineId = peer.remoteMachineId;
+    }
+    return expectedRemoteMachineId;
+}
+
+namespace {
+
+void AddUniqueCandidate(std::vector<std::string>& hosts,
+                        std::string_view configuredHost,
+                        const std::string& candidate) {
+    if (candidate.empty() || candidate == configuredHost || !IsIpv4Literal(candidate) ||
+        std::find(hosts.begin(), hosts.end(), candidate) != hosts.end()) {
+        return;
+    }
+    hosts.push_back(candidate);
+}
+
+} // namespace
+
+PeerRecoveryPlan BuildPeerRecoveryPlanFromCandidates(
+    const AppConfig& config,
+    const AppState& state,
+    const std::vector<DiscoveryCandidate>& candidates) {
+    PeerRecoveryPlan plan;
+    plan.expectedRemoteMachineId = FindExpectedRemoteMachineId(state, config.host, config.port);
+
+    const auto knownHosts = CollectRecoveryCandidateHosts(state, config.host, config.port);
+    for (const auto& host : knownHosts) {
+        AddUniqueCandidate(plan.candidateHosts, config.host, host);
+    }
+
+    if (plan.expectedRemoteMachineId != 0) {
+        std::vector<const PeerState*> identityMatches;
+        for (const auto& peer : state.peers) {
+            if (peer.approved && peer.port == config.port &&
+                peer.remoteMachineId == plan.expectedRemoteMachineId) {
+                identityMatches.push_back(&peer);
+            }
+        }
+        std::stable_sort(identityMatches.begin(), identityMatches.end(), [](const PeerState* lhs, const PeerState* rhs) {
+            return lhs->lastConnectedEpochSeconds > rhs->lastConnectedEpochSeconds;
+        });
+        for (const auto* peer : identityMatches) {
+            AddUniqueCandidate(plan.candidateHosts, config.host, peer->host);
+            for (const auto& previousHost : peer->previousHosts) {
+                AddUniqueCandidate(plan.candidateHosts, config.host, previousHost);
+            }
+        }
+    }
+
+    for (const auto& host : CollectRecoveryDiscoveredHosts(state, config.host, config.port, candidates)) {
+        AddUniqueCandidate(plan.candidateHosts, config.host, host);
+    }
+
+    if (!IsIpv4Literal(config.host)) {
+        for (const auto& candidate : candidates) {
+            if (candidate.status == DiscoveryStatus::Open &&
+                HostLabelsMatch(candidate.hostName, config.host)) {
+                AddUniqueCandidate(plan.candidateHosts, config.host, candidate.ipAddress);
+            }
+        }
+    }
+
+    if (plan.expectedRemoteMachineId != 0) {
+        // Every open candidate is safe to try because NetworkManager validates
+        // the authenticated handshake machine id before entering the session.
+        for (const auto& candidate : candidates) {
+            if (candidate.status == DiscoveryStatus::Open) {
+                AddUniqueCandidate(plan.candidateHosts, config.host, candidate.ipAddress);
+            }
+        }
+    } else {
+        const auto unidentifiedHosts =
+            CollectRecoveryUnidentifiedHosts(state, config.host, config.port, candidates);
+        if (unidentifiedHosts.size() == 1) {
+            AddUniqueCandidate(plan.candidateHosts, config.host, unidentifiedHosts.front());
+        }
+    }
+
+    return plan;
+}
+
+PeerRecoveryPlan BuildPeerRecoveryPlan(const AppConfig& config, const AppState& state) {
+    DiscoveryOptions discoveryOptions;
+    discoveryOptions.port = static_cast<uint16_t>(config.port);
+    discoveryOptions.connectTimeoutMs = 200;
+    discoveryOptions.maxHostsPerSubnet = 256;
+    return BuildPeerRecoveryPlanFromCandidates(config, state, DiscoverLanCandidates(discoveryOptions));
+}
+
 std::optional<std::string> RecoverConfiguredHostFromKnownPeers(const AppConfig& config,
                                                                const AppState& state) {
+    const PeerRecoveryPlan identityPlan = BuildPeerRecoveryPlan(config, state);
+    for (const auto& host : identityPlan.candidateHosts) {
+        if (auto reachable = ProbeReachableIpv4Host(host, config.port, 250)) {
+            if (identityPlan.expectedRemoteMachineId != 0) {
+                std::cout << "[RECOVERY] Trying a candidate for the approved peer identity." << std::endl;
+            }
+            return reachable;
+        }
+    }
+
     const bool configuredHostIsIpv4 = IsIpv4Literal(config.host);
     const auto knownPeerHosts = CollectRecoveryCandidateHosts(state, config.host, config.port);
     for (const auto& host : knownPeerHosts) {
@@ -376,6 +548,18 @@ std::optional<std::string> RecoverConfiguredHostFromKnownPeers(const AppConfig& 
                 }
             }
         }
+    }
+
+    // Some Windows hosts accept the control connection but do not expose a
+    // resolvable LAN name. If discovery leaves exactly one open, unnamed
+    // candidate after known other peers are excluded, let the authenticated
+    // session handshake confirm it instead of remaining stuck on a stale IP.
+    const auto unidentifiedHosts =
+        CollectRecoveryUnidentifiedHosts(state, config.host, config.port, candidates);
+    if (unidentifiedHosts.size() == 1) {
+        std::cout << "[RECOVERY] Trying the sole unidentified peer address; session authentication will verify it."
+                  << std::endl;
+        return unidentifiedHosts.front();
     }
 
     return std::nullopt;

@@ -17,6 +17,11 @@
 
 namespace mwb {
 
+struct PeerHostResolution {
+    uint32_t expectedRemoteMachineId{0};
+    std::vector<std::string> candidateHosts;
+};
+
 class NetworkManager {
 public:
     NetworkManager(const std::string& host, int port, const std::string& key);
@@ -35,10 +40,11 @@ public:
 
     void SetAutoConnectEnabled(bool enabled) { m_autoConnectEnabled = enabled; }
     void SetReconnectBackoff(int initialBackoffMs, int maxBackoffMs, int idleRetryMs);
-    // Optional callback used to re-resolve the peer address (e.g. via LAN
-    // discovery) when reconnect attempts stall. Returns a fresh host/IP, or
-    // std::nullopt when no better address is known.
-    void SetHostResolver(std::function<std::optional<std::string>()> resolver);
+    void SetExpectedRemoteMachineId(uint32_t machineId) { m_expectedRemoteMachineId = machineId; }
+    // Optional callback used to discover candidate endpoints for the approved
+    // peer when reconnect attempts stall. Candidates are authenticated against
+    // expectedRemoteMachineId before a session can be established.
+    void SetHostResolver(std::function<PeerHostResolution()> resolver);
     bool Connect();
     void RunLoop();
     bool SendMouse(const MouseData& mouse);
@@ -107,8 +113,10 @@ private:
     int m_reconnectInitialBackoffMs{1000};
     int m_reconnectMaxBackoffMs{30000};
     int m_reconnectIdleRetryMs{30000};
+    uint32_t m_expectedRemoteMachineId{0};
+    std::vector<std::string> m_resolvedHostCandidates;
 
-    std::function<std::optional<std::string>()> m_hostResolver;
+    std::function<PeerHostResolution()> m_hostResolver;
 
     std::atomic<bool> m_networkChanged{false};
     int m_netlinkFd{-1};
@@ -116,6 +124,7 @@ private:
 
     std::string HostSnapshot();
     bool TryRefreshHostFromResolver();
+    bool TryNextResolvedHost();
     void StartNetworkChangeWatcher();
     void NetworkChangeWatcherLoop();
     bool ReconnectSleep(int delayMs);
