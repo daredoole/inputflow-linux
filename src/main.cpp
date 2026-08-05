@@ -1020,48 +1020,7 @@ std::optional<std::string> ProbeReachableIpv4Host(const std::string& host, int p
 
 std::optional<std::string> TryRecoverHostFromKnownPeers(const mwb::AppConfig& config,
                                                          const mwb::AppState& state) {
-    const bool configuredHostIsIpv4 = mwb::IsIpv4Literal(config.host);
-    const auto knownPeerHosts = mwb::CollectRecoveryCandidateHosts(state, config.host, config.port);
-    for (const auto& host : knownPeerHosts) {
-        if (auto reachable = ProbeReachableIpv4Host(host, config.port, 250)) {
-            std::cout << "[RECOVERY] Found a verified approved peer address";
-            if (configuredHostIsIpv4) {
-                std::cout << "; using name-priority recovery before trusting the configured IP";
-            } else {
-                std::cout << "; reusing verified peer address";
-            }
-            std::cout << std::endl;
-            return reachable;
-        }
-    }
-
-    if (configuredHostIsIpv4 && ProbeReachableIpv4Host(config.host, config.port, 200).has_value()) {
-        return std::nullopt;
-    }
-
-    mwb::DiscoveryOptions discoveryOptions;
-    discoveryOptions.port = static_cast<uint16_t>(config.port);
-    discoveryOptions.connectTimeoutMs = 200;
-    discoveryOptions.maxHostsPerSubnet = 256;
-    const auto candidates = mwb::DiscoverLanCandidates(discoveryOptions);
-    if (!mwb::IsIpv4Literal(config.host)) {
-        for (const auto& candidate : candidates) {
-            if (candidate.status != mwb::DiscoveryStatus::Open ||
-                candidate.hostName.empty() ||
-                !mwb::IsIpv4Literal(candidate.ipAddress) ||
-                !mwb::HostLabelsMatch(candidate.hostName, config.host)) {
-                continue;
-            }
-            std::cout << "[RECOVERY] Resolved the approved peer through LAN discovery." << std::endl;
-            return candidate.ipAddress;
-        }
-    }
-    for (const auto& host : mwb::CollectRecoveryDiscoveredHosts(state, config.host, config.port, candidates)) {
-        std::cout << "[RECOVERY] Using the verified address of an approved peer." << std::endl;
-        return host;
-    }
-
-    return std::nullopt;
+    return mwb::RecoverConfiguredHostFromKnownPeers(config, state);
 }
 
 std::int64_t CurrentEpochSeconds() {
@@ -1269,9 +1228,10 @@ int RunClient(const mwb::AppConfig& config,
     options.androidRelay.androidDeviceWidth = runtimeConfig.androidDeviceWidth;
     options.androidRelay.androidDeviceHeight = runtimeConfig.androidDeviceHeight;
     options.androidRelay.notificationSyncEnabled = runtimeConfig.notificationSyncEnabled;
-    options.onSessionEstablished = [&](const std::string& host, int port, const std::string& remoteName, uint32_t, uint32_t localMachineId) {
+    options.onSessionEstablished = [&](const std::string& host, int port, const std::string& remoteName,
+                                       uint32_t remoteMachineId, uint32_t localMachineId) {
         std::lock_guard<std::mutex> lock(stateMutex);
-        mwb::MarkSessionEstablished(state, host, port, remoteName, localMachineId, CurrentEpochSeconds());
+        mwb::MarkSessionEstablished(state, host, port, remoteName, remoteMachineId, localMachineId, CurrentEpochSeconds());
         (void)SaveStateOrReport(statePath, state);
     };
     options.onSessionDisconnected = [&]() {
@@ -1279,6 +1239,16 @@ int RunClient(const mwb::AppConfig& config,
         mwb::MarkSessionDisconnected(state);
         (void)SaveStateOrReport(statePath, state);
     };
+    if (mwb::PowerToysCompatibilityEnabled(runtimeConfig.connectionMode)) {
+        const mwb::AppConfig resolverConfig = config;
+        options.expectedRemoteMachineId =
+            mwb::FindExpectedRemoteMachineId(state, resolverConfig.host, resolverConfig.port);
+        options.resolveHost = [resolverConfig, &state, &stateMutex]() -> mwb::PeerHostResolution {
+            std::lock_guard<std::mutex> lock(stateMutex);
+            mwb::PeerRecoveryPlan plan = mwb::BuildPeerRecoveryPlan(resolverConfig, state);
+            return mwb::PeerHostResolution{plan.expectedRemoteMachineId, std::move(plan.candidateHosts)};
+        };
+    }
 
     mwb::ClientRuntime runtime(std::move(options));
 

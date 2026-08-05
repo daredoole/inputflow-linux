@@ -979,7 +979,7 @@ void NetworkManager::SetReconnectBackoff(int initialBackoffMs, int maxBackoffMs,
     m_reconnectIdleRetryMs = policy.idleRetryMs;
 }
 
-void NetworkManager::SetHostResolver(std::function<std::optional<std::string>()> resolver) {
+void NetworkManager::SetHostResolver(std::function<PeerHostResolution()> resolver) {
     m_hostResolver = std::move(resolver);
 }
 
@@ -993,22 +993,39 @@ bool NetworkManager::TryRefreshHostFromResolver() {
         return false;
     }
 
-    const auto resolved = m_hostResolver();
-    if (!resolved || resolved->empty()) {
+    PeerHostResolution resolution = m_hostResolver();
+    if (resolution.expectedRemoteMachineId != 0) {
+        m_expectedRemoteMachineId = resolution.expectedRemoteMachineId;
+    }
+
+    const std::string currentHost = HostSnapshot();
+    m_resolvedHostCandidates.clear();
+    for (auto& candidate : resolution.candidateHosts) {
+        if (candidate.empty() || candidate == currentHost ||
+            std::find(m_resolvedHostCandidates.begin(), m_resolvedHostCandidates.end(), candidate) !=
+                m_resolvedHostCandidates.end()) {
+            continue;
+        }
+        m_resolvedHostCandidates.push_back(std::move(candidate));
+    }
+    return TryNextResolvedHost();
+}
+
+bool NetworkManager::TryNextResolvedHost() {
+    if (m_resolvedHostCandidates.empty()) {
         return false;
     }
 
+    const std::string resolved = std::move(m_resolvedHostCandidates.front());
+    m_resolvedHostCandidates.erase(m_resolvedHostCandidates.begin());
     {
         std::lock_guard<std::mutex> lock(m_hostMutex);
-        if (m_host == *resolved) {
-            return false;
-        }
-        std::cout << "[RECONNECT] Peer address changed via rediscovery; resetting backoff."
+        std::cout << "[RECONNECT] Trying a rediscovered peer endpoint; resetting backoff."
                   << std::endl;
-        m_host = *resolved;
+        m_host = resolved;
     }
 
-    if (const auto resolvedAddress = ResolveConfiguredHostAddress(*resolved); resolvedAddress.has_value()) {
+    if (const auto resolvedAddress = ResolveConfiguredHostAddress(resolved); resolvedAddress.has_value()) {
         m_expectedPeerAddress = *resolvedAddress;
     } else {
         m_expectedPeerAddress = 0;
@@ -1878,6 +1895,10 @@ void NetworkManager::RunLoop() {
                 reconnectState = InitialReconnectState(reconnectPolicy);
             }
             if (!ConnectOutbound(outboundChallenge)) {
+                if (TryNextResolvedHost()) {
+                    reconnectState = InitialReconnectState(reconnectPolicy);
+                    continue;
+                }
                 const int scheduledBackoffMs = ScheduledReconnectDelayMs(reconnectPolicy, reconnectState);
                 const int delayMs = AddReconnectJitter(scheduledBackoffMs);
                 std::cout << "[RECONNECT] Peer unavailable. Retrying in " << delayMs << " ms." << std::endl;
@@ -1897,6 +1918,11 @@ void NetworkManager::RunLoop() {
             }
             closeSocket(m_socket);
 
+            if (TryNextResolvedHost()) {
+                reconnectState = InitialReconnectState(reconnectPolicy);
+                continue;
+            }
+
             const int scheduledBackoffMs = ScheduledReconnectDelayMs(reconnectPolicy, reconnectState);
             const int delayMs = AddReconnectJitter(scheduledBackoffMs);
             std::cout << "[RECONNECT] Protocol error (noise). Retrying in " << delayMs << " ms." << std::endl;
@@ -1912,6 +1938,11 @@ void NetworkManager::RunLoop() {
         if (!m_crypto.DecryptStream(encryptedNoise, ignoredNoise)) {
             fprintf(stderr, "[OUTBOUND] Failed to decrypt server noise\n");
             closeSocket(m_socket);
+
+            if (TryNextResolvedHost()) {
+                reconnectState = InitialReconnectState(reconnectPolicy);
+                continue;
+            }
 
             const int scheduledBackoffMs = ScheduledReconnectDelayMs(reconnectPolicy, reconnectState);
             const int delayMs = AddReconnectJitter(scheduledBackoffMs);
@@ -2023,6 +2054,11 @@ void NetworkManager::RunLoop() {
             fprintf(stderr, "[OUTBOUND] Handshake failed, will reconnect\n");
             closeSocket(m_socket);
 
+            if (TryNextResolvedHost()) {
+                reconnectState = InitialReconnectState(reconnectPolicy);
+                continue;
+            }
+
             const int scheduledBackoffMs = ScheduledReconnectDelayMs(reconnectPolicy, reconnectState);
             const int delayMs = AddReconnectJitter(scheduledBackoffMs);
             std::cout << "[RECONNECT] Handshake failed. Retrying in " << delayMs << " ms." << std::endl;
@@ -2033,8 +2069,39 @@ void NetworkManager::RunLoop() {
             continue;
         }
 
+        if (m_expectedRemoteMachineId != 0 && m_desId != m_expectedRemoteMachineId) {
+            std::cerr << "[SECURITY] Rediscovered endpoint authenticated as unexpected machine id 0x"
+                      << std::hex << m_desId << "; expected 0x" << m_expectedRemoteMachineId
+                      << std::dec << ". Rejecting candidate." << std::endl;
+            closeSocket(m_socket);
+            {
+                std::lock_guard<std::mutex> lock(m_sendMutex);
+                m_sessionId = 0;
+                m_desId = 0;
+                m_handshakeDone = false;
+                m_remoteName.clear();
+                m_crypto.Reset();
+            }
+            if (TryNextResolvedHost()) {
+                reconnectState = InitialReconnectState(reconnectPolicy);
+                continue;
+            }
+
+            const int scheduledBackoffMs = ScheduledReconnectDelayMs(reconnectPolicy, reconnectState);
+            const int delayMs = AddReconnectJitter(scheduledBackoffMs);
+            std::cout << "[RECONNECT] No candidate matched the approved peer identity. Retrying in "
+                      << delayMs << " ms." << std::endl;
+            reconnectState = AdvanceReconnectAfterFailure(reconnectPolicy, reconnectState);
+            if (!ReconnectSleep(delayMs)) {
+                break;
+            }
+            continue;
+        }
+
         printf("[SUCCESS] MWB Session Established. Entering Main Loop.\n");
         fflush(stdout);
+        m_expectedRemoteMachineId = m_desId;
+        m_resolvedHostCandidates.clear();
         reconnectState = ResetReconnectAfterSuccess(reconnectPolicy);
         if (!remoteName.empty()) {
             m_remoteName = remoteName;

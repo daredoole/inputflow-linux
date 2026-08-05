@@ -38,6 +38,7 @@ struct RuntimeOptions {
     bool mprisMediaKeysEnabled{true};
     std::string mprisPlayer;
     std::optional<uint32_t> localMachineId;
+    uint32_t expectedRemoteMachineId{0};
     std::string localMachineName;
     bool debugInputLogging{false};
     bool debugKeyLogging{false};
@@ -51,9 +52,9 @@ struct RuntimeOptions {
     AndroidRelayOptions androidRelay;
     std::function<void(const std::string&, int, const std::string&, uint32_t, uint32_t)> onSessionEstablished;
     std::function<void()> onSessionDisconnected;
-    // Re-resolves the peer address when reconnect attempts stall (returns a
-    // fresh host/IP via discovery, or std::nullopt if none is better).
-    std::function<std::optional<std::string>()> resolveHost;
+    // Discovers candidate endpoints for the intended approved peer. The
+    // network layer authenticates each candidate's machine id before use.
+    std::function<PeerHostResolution()> resolveHost;
 };
 
 class ClientRuntime {

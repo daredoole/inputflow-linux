@@ -113,6 +113,25 @@ std::string NormalizePeerName(std::string value) {
     return value;
 }
 
+void AddUniquePreviousHost(PeerState& peer, const std::string& host) {
+    if (host.empty() || host == peer.host ||
+        std::find(peer.previousHosts.begin(), peer.previousHosts.end(), host) != peer.previousHosts.end()) {
+        return;
+    }
+
+    constexpr std::size_t kMaximumPreviousHosts = 8;
+    peer.previousHosts.push_back(host);
+    if (peer.previousHosts.size() > kMaximumPreviousHosts) {
+        peer.previousHosts.erase(peer.previousHosts.begin());
+    }
+}
+
+void MergePreviousHosts(PeerState& target, const PeerState& source) {
+    for (const auto& host : source.previousHosts) {
+        AddUniquePreviousHost(target, host);
+    }
+}
+
 } // namespace
 
 std::filesystem::path DefaultStatePath() {
@@ -163,7 +182,7 @@ bool LoadAppState(const std::filesystem::path& path, AppState& state, std::strin
                 fields.push_back(field);
             }
 
-            if (fields.size() != 6 && fields.size() != 7) {
+            if (fields.size() < 6 || fields.size() > 9) {
                 errorMessage = "Invalid peer record on line " + std::to_string(lineNumber) + ".";
                 return false;
             }
@@ -174,9 +193,10 @@ bool LoadAppState(const std::filesystem::path& path, AppState& state, std::strin
 
             const auto port = ParsePort(fields[2]);
             const auto approved = ParseBool(fields[3]);
-            const auto connectedNow = (fields.size() == 7) ? ParseBool(fields[4]) : std::optional<bool>(false);
-            const auto lastSeen = ParseInt64(fields[fields.size() == 7 ? 5 : 4]);
-            const auto lastConnected = ParseInt64(fields[fields.size() == 7 ? 6 : 5]);
+            const bool hasConnectedField = fields.size() >= 7;
+            const auto connectedNow = hasConnectedField ? ParseBool(fields[4]) : std::optional<bool>(false);
+            const auto lastSeen = ParseInt64(fields[hasConnectedField ? 5 : 4]);
+            const auto lastConnected = ParseInt64(fields[hasConnectedField ? 6 : 5]);
             if (!port || !approved || !connectedNow || !lastSeen || !lastConnected) {
                 errorMessage = "Invalid peer values on line " + std::to_string(lineNumber) + ".";
                 return false;
@@ -187,6 +207,22 @@ bool LoadAppState(const std::filesystem::path& path, AppState& state, std::strin
             peer.connectedNow = *connectedNow;
             peer.lastSeenEpochSeconds = *lastSeen;
             peer.lastConnectedEpochSeconds = *lastConnected;
+            if (fields.size() >= 8) {
+                const auto remoteMachineId = ParseMachineId(fields[7]);
+                if (!remoteMachineId) {
+                    errorMessage = "Invalid peer machine id on line " + std::to_string(lineNumber) + ".";
+                    return false;
+                }
+                peer.remoteMachineId = *remoteMachineId;
+            }
+            if (fields.size() >= 9) {
+                std::stringstream aliases(fields[8]);
+                std::string alias;
+                while (std::getline(aliases, alias, ',')) {
+                    alias = Trim(std::move(alias));
+                    AddUniquePreviousHost(peer, alias);
+                }
+            }
             parsed.peers.push_back(std::move(peer));
         }
     }
@@ -206,7 +242,15 @@ bool SaveAppState(const std::filesystem::path& path, const AppState& state, std:
                << (peer.approved ? "true" : "false") << '\t'
                << (peer.connectedNow ? "true" : "false") << '\t'
                << peer.lastSeenEpochSeconds << '\t'
-               << peer.lastConnectedEpochSeconds << "\n";
+               << peer.lastConnectedEpochSeconds << '\t'
+               << "0x" << std::hex << peer.remoteMachineId << std::dec << '\t';
+        for (std::size_t index = 0; index < peer.previousHosts.size(); ++index) {
+            if (index != 0) {
+                output << ',';
+            }
+            output << peer.previousHosts[index];
+        }
+        output << "\n";
     }
 
     return WritePrivateFileAtomically(path, output.str(), errorMessage);
@@ -228,8 +272,18 @@ uint32_t EnsureLocalMachineId(AppState& state) {
 
 void UpsertPeerState(AppState& state, const PeerState& peer) {
     auto existing = std::find_if(state.peers.begin(), state.peers.end(), [&](const PeerState& current) {
-        return current.host == peer.host && current.port == peer.port;
+        return peer.remoteMachineId != 0 &&
+               current.remoteMachineId == peer.remoteMachineId &&
+               current.port == peer.port;
     });
+
+    if (existing == state.peers.end()) {
+        existing = std::find_if(state.peers.begin(), state.peers.end(), [&](const PeerState& current) {
+            const bool identitiesCompatible = peer.remoteMachineId == 0 || current.remoteMachineId == 0 ||
+                                              current.remoteMachineId == peer.remoteMachineId;
+            return identitiesCompatible && current.host == peer.host && current.port == peer.port;
+        });
+    }
 
     if (existing == state.peers.end()) {
         PeerState toInsert = peer;
@@ -240,9 +294,19 @@ void UpsertPeerState(AppState& state, const PeerState& peer) {
         return;
     }
 
+    if (peer.remoteMachineId != 0 && existing->remoteMachineId == peer.remoteMachineId &&
+        !peer.host.empty() && existing->host != peer.host) {
+        const std::string previousHost = existing->host;
+        existing->host = peer.host;
+        AddUniquePreviousHost(*existing, previousHost);
+    }
     if (!peer.name.empty()) {
         existing->name = peer.name;
     }
+    if (peer.remoteMachineId != 0) {
+        existing->remoteMachineId = peer.remoteMachineId;
+    }
+    MergePreviousHosts(*existing, peer);
     existing->approved = existing->approved || peer.approved;
     existing->connectedNow = peer.connectedNow;
     existing->lastSeenEpochSeconds = std::max(existing->lastSeenEpochSeconds, peer.lastSeenEpochSeconds);
@@ -292,6 +356,7 @@ void MarkSessionEstablished(
     const std::string& host,
     int port,
     const std::string& remoteName,
+    uint32_t remoteMachineId,
     uint32_t localMachineId,
     std::int64_t epochSeconds) {
     if (localMachineId != 0) {
@@ -299,7 +364,9 @@ void MarkSessionEstablished(
     }
 
     ClearConnectedPeers(state);
-    RemoveStalePeerAddressesForName(state, remoteName, host, port);
+    if (remoteMachineId == 0) {
+        RemoveStalePeerAddressesForName(state, remoteName, host, port);
+    }
 
     PeerState peer;
     peer.host = host;
@@ -309,6 +376,7 @@ void MarkSessionEstablished(
     peer.connectedNow = true;
     peer.lastSeenEpochSeconds = epochSeconds;
     peer.lastConnectedEpochSeconds = epochSeconds;
+    peer.remoteMachineId = remoteMachineId;
     UpsertPeerState(state, peer);
 }
 
