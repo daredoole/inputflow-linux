@@ -399,6 +399,7 @@ constexpr const char* kInputCapturePath = "/org/freedesktop/portal/desktop";
 constexpr const char* kInputCaptureInterface = "org.freedesktop.portal.InputCapture";
 constexpr uint32_t kPersistentInputCapturePortalVersion = 2;
 constexpr uint32_t kPersistUntilRevoked = 2;
+constexpr int kInteractivePortalRequestTimeoutMs = 120000;
 constexpr uint32_t kCapabilityKeyboard = 1;
 constexpr uint32_t kCapabilityPointer = 2;
 constexpr uint32_t kCapabilityMask = kCapabilityKeyboard | kCapabilityPointer;
@@ -635,7 +636,8 @@ std::optional<std::string> CreateLegacySession(GDBusConnection* connection) {
     }
 
     RequestResult result;
-    if (!WaitForRequest(connection, request.c_str(), result, 30000)) {
+    if (!WaitForRequest(
+            connection, request.c_str(), result, kInteractivePortalRequestTimeoutMs)) {
         if (result.results) {
             g_variant_unref(result.results);
         }
@@ -767,7 +769,11 @@ bool StartPersistentSession(GDBusConnection* connection, const std::string& sess
     }
 
     const bool ok = WaitForSubscribedRequest(
-        connection, request.c_str(), result, subscription, 30000);
+        connection,
+        request.c_str(),
+        result,
+        subscription,
+        kInteractivePortalRequestTimeoutMs);
     if (ok && result.results) {
         const char* newRestoreToken = nullptr;
         if (g_variant_lookup(result.results, "restore_token", "&s", &newRestoreToken) &&
