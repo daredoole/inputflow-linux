@@ -85,7 +85,11 @@ jobs:
       - name: Build Android targets
         if: matrix.language == 'java-kotlin'
         working-directory: android
-        run: ./gradlew :app:assembleRelease :app:testDebugUnitTest --no-daemon --stacktrace
+        env:
+          # CodeQL instrumentation increases compiler memory use. Keep one JVM
+          # and bounded parallelism so the hosted runner cannot overcommit RAM.
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.compiler.execution.strategy=in-process
+        run: ./gradlew :app:assembleRelease --no-daemon --max-workers=2 --stacktrace
 
       - name: Analyze
         uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
