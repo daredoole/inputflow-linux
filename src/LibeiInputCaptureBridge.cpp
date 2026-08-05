@@ -1,4 +1,5 @@
 #include "LibeiInputCaptureBridge.h"
+#include "SecureFile.h"
 
 #include <linux/input-event-codes.h>
 
@@ -396,6 +397,9 @@ bool RunNativeLibinputGestureMonitor(
 constexpr const char* kPortalBusName = "org.freedesktop.portal.Desktop";
 constexpr const char* kInputCapturePath = "/org/freedesktop/portal/desktop";
 constexpr const char* kInputCaptureInterface = "org.freedesktop.portal.InputCapture";
+constexpr uint32_t kPersistentInputCapturePortalVersion = 2;
+constexpr uint32_t kPersistUntilRevoked = 2;
+constexpr int kInteractivePortalRequestTimeoutMs = 120000;
 constexpr uint32_t kCapabilityKeyboard = 1;
 constexpr uint32_t kCapabilityPointer = 2;
 constexpr uint32_t kCapabilityMask = kCapabilityKeyboard | kCapabilityPointer;
@@ -449,11 +453,10 @@ void OnRequestResponse(GDBusConnection*,
     result->done = true;
 }
 
-bool WaitForRequest(GDBusConnection* connection,
-                    const char* requestPath,
-                    RequestResult& result,
-                    int timeoutMs) {
-    const guint subscription = g_dbus_connection_signal_subscribe(
+guint SubscribeToRequest(GDBusConnection* connection,
+                         const char* requestPath,
+                         RequestResult& result) {
+    return g_dbus_connection_signal_subscribe(
         connection,
         kPortalBusName,
         "org.freedesktop.portal.Request",
@@ -464,6 +467,18 @@ bool WaitForRequest(GDBusConnection* connection,
         OnRequestResponse,
         &result,
         nullptr);
+}
+
+bool WaitForSubscribedRequest(GDBusConnection* connection,
+                              const char* requestPath,
+                              RequestResult& result,
+                              guint subscription,
+                              int timeoutMs) {
+    if (subscription == 0) {
+        std::cerr << "WARN: Could not subscribe to libei input capture request: " << requestPath
+                  << std::endl;
+        return false;
+    }
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     while (!result.done && std::chrono::steady_clock::now() < deadline) {
@@ -488,7 +503,106 @@ bool WaitForRequest(GDBusConnection* connection,
     return true;
 }
 
-std::optional<std::string> CreateSession(GDBusConnection* connection) {
+bool WaitForRequest(GDBusConnection* connection,
+                    const char* requestPath,
+                    RequestResult& result,
+                    int timeoutMs) {
+    return WaitForSubscribedRequest(
+        connection,
+        requestPath,
+        result,
+        SubscribeToRequest(connection, requestPath, result),
+        timeoutMs);
+}
+
+std::string ExpectedRequestPath(GDBusConnection* connection, const std::string& token) {
+    const char* uniqueName = g_dbus_connection_get_unique_name(connection);
+    if (!uniqueName || uniqueName[0] == '\0') {
+        return {};
+    }
+
+    std::string sender = uniqueName[0] == ':' ? uniqueName + 1 : uniqueName;
+    std::replace(sender.begin(), sender.end(), '.', '_');
+    return "/org/freedesktop/portal/desktop/request/" + sender + "/" + token;
+}
+
+uint32_t InputCapturePortalVersion(GDBusConnection* connection) {
+    GError* error = nullptr;
+    GVariant* reply = g_dbus_connection_call_sync(
+        connection,
+        kPortalBusName,
+        kInputCapturePath,
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        g_variant_new("(ss)", kInputCaptureInterface, "version"),
+        G_VARIANT_TYPE("(v)"),
+        G_DBUS_CALL_FLAGS_NONE,
+        1000,
+        nullptr,
+        &error);
+    if (!reply) {
+        FreeError(error, "portal version query");
+        return 1;
+    }
+
+    GVariant* value = nullptr;
+    g_variant_get(reply, "(@v)", &value);
+    GVariant* unboxedValue = g_variant_get_variant(value);
+    const uint32_t version = g_variant_get_uint32(unboxedValue);
+    g_variant_unref(unboxedValue);
+    g_variant_unref(value);
+    g_variant_unref(reply);
+    return version;
+}
+
+std::filesystem::path RestoreTokenPath() {
+    const char* stateDirectory = g_get_user_state_dir();
+    if (!stateDirectory || stateDirectory[0] == '\0') {
+        return {};
+    }
+    return std::filesystem::path(stateDirectory) / "inputflow" / "input-capture.restore-token";
+}
+
+std::string LoadRestoreToken() {
+    const std::filesystem::path path = RestoreTokenPath();
+    if (path.empty()) {
+        return {};
+    }
+
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(path, error);
+    if (error || !std::filesystem::is_regular_file(status)) {
+        return {};
+    }
+
+    std::ifstream input(path, std::ios::binary);
+    std::string token;
+    std::getline(input, token);
+    if (!input && !input.eof()) {
+        return {};
+    }
+    if (token.size() > 16384) {
+        std::cerr << "WARN: Ignoring oversized libei input capture restore token." << std::endl;
+        return {};
+    }
+    return token;
+}
+
+void StoreRestoreToken(const std::string& token) {
+    const std::filesystem::path path = RestoreTokenPath();
+    if (path.empty()) {
+        std::cerr << "WARN: Cannot persist libei input capture permission: user state directory unavailable."
+                  << std::endl;
+        return;
+    }
+
+    std::string error;
+    if (!WritePrivateFileAtomically(path, token, error)) {
+        std::cerr << "WARN: Cannot persist libei input capture permission: " << error << std::endl;
+    }
+}
+
+std::optional<std::string> CreateLegacySession(GDBusConnection* connection) {
     GVariantBuilder options;
     g_variant_builder_init(&options, G_VARIANT_TYPE("a{sv}"));
     const std::string token = UniqueToken("inputflow_android");
@@ -522,7 +636,8 @@ std::optional<std::string> CreateSession(GDBusConnection* connection) {
     }
 
     RequestResult result;
-    if (!WaitForRequest(connection, request.c_str(), result, 30000)) {
+    if (!WaitForRequest(
+            connection, request.c_str(), result, kInteractivePortalRequestTimeoutMs)) {
         if (result.results) {
             g_variant_unref(result.results);
         }
@@ -541,6 +656,146 @@ std::optional<std::string> CreateSession(GDBusConnection* connection) {
         g_variant_unref(result.results);
     }
     return out;
+}
+
+std::optional<std::string> CreatePersistentSession(GDBusConnection* connection) {
+    GVariantBuilder options;
+    g_variant_builder_init(&options, G_VARIANT_TYPE("a{sv}"));
+    const std::string token = UniqueToken("inputflow_android");
+    g_variant_builder_add(&options, "{sv}", "session_handle_token", g_variant_new_string(token.c_str()));
+
+    GError* error = nullptr;
+    GVariant* reply = g_dbus_connection_call_sync(
+        connection,
+        kPortalBusName,
+        kInputCapturePath,
+        kInputCaptureInterface,
+        "CreateSession2",
+        g_variant_new("(a{sv})", &options),
+        G_VARIANT_TYPE("(a{sv})"),
+        G_DBUS_CALL_FLAGS_NONE,
+        -1,
+        nullptr,
+        &error);
+    if (!reply) {
+        FreeError(error, "CreateSession2");
+        return std::nullopt;
+    }
+
+    GVariant* results = nullptr;
+    g_variant_get(reply, "(@a{sv})", &results);
+    const char* sessionHandle = nullptr;
+    const bool ok = results && g_variant_lookup(results, "session_handle", "&o", &sessionHandle);
+    std::optional<std::string> out;
+    if (ok && sessionHandle) {
+        out = sessionHandle;
+    } else {
+        std::cerr << "WARN: libei input capture CreateSession2 returned no session_handle." << std::endl;
+    }
+    if (results) {
+        g_variant_unref(results);
+    }
+    g_variant_unref(reply);
+    return out;
+}
+
+bool StartPersistentSession(GDBusConnection* connection, const std::string& sessionHandle) {
+    GVariantBuilder options;
+    g_variant_builder_init(&options, G_VARIANT_TYPE("a{sv}"));
+    const std::string requestToken = UniqueToken("start");
+    g_variant_builder_add(
+        &options, "{sv}", "handle_token", g_variant_new_string(requestToken.c_str()));
+    g_variant_builder_add(&options, "{sv}", "capabilities", g_variant_new_uint32(kCapabilityMask));
+    g_variant_builder_add(&options, "{sv}", "persist_mode", g_variant_new_uint32(kPersistUntilRevoked));
+
+    const std::string restoreToken = LoadRestoreToken();
+    if (!restoreToken.empty()) {
+        g_variant_builder_add(
+            &options, "{sv}", "restore_token", g_variant_new_string(restoreToken.c_str()));
+        std::cerr << "INFO: Restoring the saved input capture permission." << std::endl;
+    } else {
+        std::cerr << "INFO: In the one-time Input Capture dialog, select 'Allow restoring on "
+                     "future sessions' before choosing Allow."
+                  << std::endl;
+    }
+
+    // A restored portal session may answer immediately. Subscribe to the
+    // predictable request path before Start so that response cannot be lost
+    // between the method reply and signal subscription.
+    RequestResult result;
+    const std::string expectedRequest = ExpectedRequestPath(connection, requestToken);
+    guint subscription = expectedRequest.empty()
+                             ? 0
+                             : SubscribeToRequest(connection, expectedRequest.c_str(), result);
+
+    GError* error = nullptr;
+    GVariant* reply = g_dbus_connection_call_sync(
+        connection,
+        kPortalBusName,
+        kInputCapturePath,
+        kInputCaptureInterface,
+        "Start",
+        g_variant_new("(osa{sv})", sessionHandle.c_str(), "", &options),
+        G_VARIANT_TYPE("(o)"),
+        G_DBUS_CALL_FLAGS_NONE,
+        -1,
+        nullptr,
+        &error);
+    if (!reply) {
+        if (subscription != 0) {
+            g_dbus_connection_signal_unsubscribe(connection, subscription);
+        }
+        FreeError(error, "Start");
+        return false;
+    }
+
+    const char* requestPath = nullptr;
+    g_variant_get(reply, "(&o)", &requestPath);
+    const std::string request(requestPath ? requestPath : "");
+    g_variant_unref(reply);
+
+    if (request.empty()) {
+        if (subscription != 0) {
+            g_dbus_connection_signal_unsubscribe(connection, subscription);
+        }
+        return false;
+    }
+    if (request != expectedRequest) {
+        if (subscription != 0) {
+            g_dbus_connection_signal_unsubscribe(connection, subscription);
+        }
+        result = {};
+        subscription = SubscribeToRequest(connection, request.c_str(), result);
+    }
+
+    const bool ok = WaitForSubscribedRequest(
+        connection,
+        request.c_str(),
+        result,
+        subscription,
+        kInteractivePortalRequestTimeoutMs);
+    if (ok && result.results) {
+        const char* newRestoreToken = nullptr;
+        if (g_variant_lookup(result.results, "restore_token", "&s", &newRestoreToken) &&
+            newRestoreToken && newRestoreToken[0] != '\0') {
+            StoreRestoreToken(newRestoreToken);
+            std::cerr << "INFO: Input capture permission saved for future sessions." << std::endl;
+        } else {
+            if (!restoreToken.empty()) {
+                // A successfully used token is single-use. Do not retain a
+                // stale token when the portal declines to issue a replacement.
+                StoreRestoreToken({});
+            }
+            std::cerr << "WARN: Portal granted input capture without a persistent restore token; "
+                         "the desktop may prompt again after restart. Select 'Allow restoring on "
+                         "future sessions' in the permission dialog."
+                      << std::endl;
+        }
+    }
+    if (result.results) {
+        g_variant_unref(result.results);
+    }
+    return ok;
 }
 
 struct ZoneInfo {
@@ -989,10 +1244,11 @@ void LibeiInputCaptureBridge::Run() {
         return;
     }
 
-    // The xdg-desktop-portal InputCapture handshake can display an interactive
-    // permission dialog. Never repeat the whole handshake automatically: a
-    // timeout or dismissal must not flood the desktop with permission prompts.
-    // A deliberate service restart is the retry action.
+    // Portal v2 returns a single-use restore token, allowing later service
+    // starts to restore the user's permission without showing another dialog.
+    // Older portals retain the one-prompt-per-process legacy behavior.
+    const bool persistentPortal =
+        InputCapturePortalVersion(connection) >= kPersistentInputCapturePortalVersion;
     std::optional<std::string> sessionHandle;
     std::vector<CaptureTarget> captureTargets;
     ei* context = nullptr;
@@ -1002,8 +1258,10 @@ void LibeiInputCaptureBridge::Run() {
     for (int attempt = 1;
          attempt <= kLibeiInputCaptureAutomaticSetupAttempts && m_running;
          ++attempt) {
-        sessionHandle = CreateSession(connection);
-        if (sessionHandle.has_value()) {
+        sessionHandle = persistentPortal ? CreatePersistentSession(connection)
+                                         : CreateLegacySession(connection);
+        if (sessionHandle.has_value() &&
+            (!persistentPortal || StartPersistentSession(connection, *sessionHandle))) {
             captureTargets = BuildTopologyCaptureTargets(m_options);
             if (captureTargets.empty()) {
                 captureTargets = BuildFallbackAndroidCaptureTarget(m_options);
@@ -1028,6 +1286,10 @@ void LibeiInputCaptureBridge::Run() {
                     eisFd.reset();
                 }
             }
+            CloseSession(connection, *sessionHandle);
+            sessionHandle.reset();
+        }
+        if (sessionHandle.has_value()) {
             CloseSession(connection, *sessionHandle);
             sessionHandle.reset();
         }
