@@ -16,7 +16,7 @@ encrypted relay to an Android peer.
 > [release-readiness report](docs/release-readiness-report.md) and
 > [compatibility guide](docs/compatibility.md) before deployment.
 
-![InputFlow tray controller](docs/screenshots/tray-controller.svg)
+![The InputFlow tray and desktop controller both manage the mwb-client background service](docs/screenshots/tray-controller.svg)
 
 ## Contents
 

@@ -2,9 +2,6 @@
 build/
 build-*/
 .rpmbuild-local/
-**/node_modules/
-tools/icon-generator/dist/
-tools/icon-generator/masters/
 
 # Working/research files not for public release
 gemini/
